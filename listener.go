@@ -39,45 +39,12 @@ func (l *gracefulListener) Accept() (net.Conn, error) {
 	gconn := gracefulConn{
 		Conn: conn,
 		wg:   l.wg,
-		// closed: make(chan bool),
 	}
-
-	// why a good old os.Exit will fix that!
-	// go func() {
-	// 	//connection watcher
-	// 	select {
-	// 	case <-l.closeByForce:
-	// 		uconn.Close()
-	// 	case <-uconn.closed:
-	// 		//closed manually
-	// 	}
-	// }()
 
 	l.wg.Add(1)
 
 	return gconn, nil
 }
-
-// //non-blocking trigger close
-// func (l *gracefulListener) release(timeout time.Duration) {
-// 	//stop accepting connections - release fd
-// 	l.closeError = l.Listener.Close()
-
-// 	//start timer, close by force if deadline not met
-// 	waited := make(chan bool)
-// 	go func() {
-// 		l.wg.Wait()
-// 		waited <- true
-// 	}()
-// 	go func() {
-// 		select {
-// 		case <-time.After(timeout):
-// 			close(l.closeByForce)
-// 		case <-waited:
-// 			//no need to force close
-// 		}
-// 	}()
-// }
 
 // blocking wait for close
 func (l *gracefulListener) Close() error {

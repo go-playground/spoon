@@ -16,7 +16,7 @@ import (
 // AutoUpdate sets up and starts the auto updating service to autoupdate you binary
 // NOTE: the last param addlRequestHeaders is any other header you want added to the
 // HTTP request to the Update URL, like an application key, Origin....
-func (s *Spoon) AutoUpdate(updateStrategy UpdateStrategy, updateURL string, interval time.Duration, addlRequestHeaders map[string]string) (UpdatePerformed, error) {
+func (s *Spoon) AutoUpdate(updateStrategy UpdateStrategy, updateURL string, interval time.Duration, ignoreUpdateChannel bool, addlRequestHeaders map[string]string) (UpdatePerformed, error) {
 
 	if s.isAutoUpdating {
 		panic("Can only setup one AutoUpdate per application")
@@ -25,6 +25,8 @@ func (s *Spoon) AutoUpdate(updateStrategy UpdateStrategy, updateURL string, inte
 	if s.IsSlaveProcess() {
 		return nil, nil
 	}
+
+	s.ignoreUpdateChannel = ignoreUpdateChannel
 
 	var err error
 
@@ -57,15 +59,6 @@ func (s *Spoon) AutoUpdate(updateStrategy UpdateStrategy, updateURL string, inte
 }
 
 func (s *Spoon) autoUpdater() {
-
-	// go func(completed UpdatePerformed) {
-	// 	for {
-	// 		select {
-	// 		case <-completed:
-	// 			fmt.Println("Update completed")
-	// 		}
-	// 	}
-	// }(s.updateCompleted)
 
 	for {
 
@@ -145,7 +138,10 @@ func (s *Spoon) autoUpdater() {
 
 			// update completed successfully
 			s.lastUpdateChecksum = checksum
-			s.updateCompleted <- struct{}{}
+
+			if !s.ignoreUpdateChannel {
+				s.updateCompleted <- struct{}{}
+			}
 		}
 	}
 }
