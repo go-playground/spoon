@@ -1,6 +1,7 @@
 package spoon
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -27,7 +28,7 @@ func (s *Spoon) IsSlaveProcess() bool {
 }
 
 // Run sets up the addr listener File Descriptors and runs the application
-func (s *Spoon) Run(addr string) error {
+func (s *Spoon) run(addr string) error {
 	if s.IsSlaveProcess() {
 		return nil
 	}
@@ -65,14 +66,12 @@ func (s *Spoon) Run(addr string) error {
 	return nil
 }
 
-// ListenAndServe mimics the std libraries http.ListenAndServe
-func (s *Spoon) ListenAndServe(addr string, handler http.Handler) error {
-
+func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 	fds := os.Getenv(envListenerFDS)
 
 	// first server, let's call it master, to get started
 	if fds == "" {
-		return s.Run(addr)
+		return nil, s.run(addr)
 	}
 
 	forceTerm := os.Getenv(envForceTerminationNS)
@@ -100,7 +99,7 @@ func (s *Spoon) ListenAndServe(addr string, handler http.Handler) error {
 
 	l, err := net.FileListener(f)
 	if err != nil {
-		return fmt.Errorf("failed to inherit file descriptor: %d", 0)
+		return nil, fmt.Errorf("failed to inherit file descriptor: %d", 0)
 	}
 	// }
 
@@ -133,9 +132,75 @@ func (s *Spoon) ListenAndServe(addr string, handler http.Handler) error {
 		gListener.Close()
 	}()
 
-	http.Serve(gListener, handler)
+	return gListener, nil
+}
 
-	return nil
+// ListenAndServe mimics the std libraries http.ListenAndServe
+func (s *Spoon) ListenAndServe(addr string, handler http.Handler) error {
+
+	gListener, err := s.listenSetup(addr)
+	if err != nil {
+		return err
+	}
+
+	return http.Serve(gListener, handler)
+}
+
+// ListenAndServeTLS mimics the std libraries http.ListenAndServeTLS
+func (s *Spoon) ListenAndServeTLS(addr string, certFile string, keyFile string, handler http.Handler) error {
+
+	gListener, err := s.listenSetup(addr)
+	if err != nil {
+		return err
+	}
+
+	tlsConfig := &tls.Config{
+		NextProtos:   []string{"http/1.1"},
+		Certificates: make([]tls.Certificate, 1),
+	}
+
+	tlsConfig.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		panic(err)
+	}
+
+	tlsListener := tls.NewListener(gListener, tlsConfig)
+
+	server := http.Server{Addr: gListener.Addr().String(), Handler: handler, TLSConfig: tlsConfig}
+	return server.Serve(tlsListener)
+}
+
+func strSliceContains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// RunServer runs the provided server, if using TLS, TLSConfig must be setup prior to
+// calling this function
+func (s *Spoon) RunServer(server http.Server) error {
+
+	gListener, err := s.listenSetup(server.Addr)
+	if err != nil {
+		return err
+	}
+
+	if server.TLSConfig != nil {
+		if server.TLSConfig.NextProtos == nil {
+			server.TLSConfig.NextProtos = make([]string, 0)
+		}
+
+		if len(server.TLSConfig.NextProtos) == 0 || !strSliceContains(server.TLSConfig.NextProtos, "http/1.1") {
+			server.TLSConfig.NextProtos = append(server.TLSConfig.NextProtos, "http/1.1")
+		}
+
+		gListener = tls.NewListener(gListener, server.TLSConfig)
+	}
+
+	return server.Serve(gListener)
 }
 
 func (s *Spoon) startSlave() error {

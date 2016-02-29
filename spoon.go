@@ -29,7 +29,6 @@ type Spoon struct {
 	lastUpdateChecksum       string
 	updateRequest            *http.Request
 	updateCompleted          UpdatePerformed
-	ignoreUpdateChannel      bool
 	isAutoUpdating           bool
 	binaryPath               string
 	fileDescriptors          []*os.File
