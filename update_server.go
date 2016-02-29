@@ -13,11 +13,20 @@ type updateHandler struct {
 
 // ServerAutoUpdate calls ServerAutoUpdateHandler to get the handler
 // and runs an http server in another goroutine
-func ServerAutoUpdate(updateStrategy UpdateStrategy, url string, port string, filename string) {
+func ServerAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string) {
 	handler := ServerAutoUpdateHandler(updateStrategy, filename)
 
 	http.Handle(url, handler)
-	go http.ListenAndServe(port, nil)
+	go http.ListenAndServe(addr, nil)
+}
+
+// ServerTLSAutoUpdate calls ServerAutoUpdateHandler to get the handler
+// and runs an http TLS server in another goroutine
+func ServerTLSAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string, certFile string, keyFile string) {
+	handler := ServerAutoUpdateHandler(updateStrategy, filename)
+
+	http.Handle(url, handler)
+	go http.ListenAndServeTLS(addr, certFile, keyFile, nil)
 }
 
 // ServerAutoUpdateHandler returns the servers http.HandlerFunc
