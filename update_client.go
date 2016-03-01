@@ -72,7 +72,8 @@ func (s *Spoon) autoUpdater() {
 
 			resp, err := client.Do(s.updateRequest)
 			if err != nil {
-				log.Println("ERR:", err)
+				log.Println("ERROR Fetching Updates:", err)
+				continue
 			}
 			defer resp.Body.Close()
 
@@ -104,6 +105,7 @@ func (s *Spoon) autoUpdater() {
 			b, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				log.Println("ERROR Reading Body:", err)
+				continue
 			}
 
 			recvChecksum := GenerateChecksum(b)
@@ -124,15 +126,16 @@ func (s *Spoon) autoUpdater() {
 					}
 				}
 
-			} else {
-				if err := update.Apply(bytes.NewBuffer(b), update.Options{
-					Patcher: update.NewBSDiffPatcher(),
-				}); err != nil {
-					if rerr := update.RollbackError(err); rerr != nil {
-						fmt.Printf("Failed to rollback from bad update: %v\n", rerr)
-					}
-				}
 			}
+			// else {
+			// 	if err := update.Apply(bytes.NewBuffer(b), update.Options{
+			// 		Patcher: update.NewBSDiffPatcher(),
+			// 	}); err != nil {
+			// 		if rerr := update.RollbackError(err); rerr != nil {
+			// 			fmt.Printf("Failed to rollback from bad update: %v\n", rerr)
+			// 		}
+			// 	}
+			// }
 
 			// update completed successfully
 			s.lastUpdateChecksum = checksum

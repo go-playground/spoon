@@ -29,6 +29,7 @@ func (s *Spoon) IsSlaveProcess() bool {
 
 // Run sets up the addr listener File Descriptors and runs the application
 func (s *Spoon) run(addr string) error {
+
 	if s.IsSlaveProcess() {
 		return nil
 	}
@@ -57,7 +58,6 @@ func (s *Spoon) run(addr string) error {
 	}()
 
 	// wait for close signals here
-
 	signals := make(chan os.Signal)
 	signal.Notify(signals, syscall.SIGTERM)
 
@@ -143,7 +143,24 @@ func (s *Spoon) ListenAndServe(addr string, handler http.Handler) error {
 		return err
 	}
 
+	go s.signalParent()
+
 	return http.Serve(gListener, handler)
+}
+
+func (s *Spoon) signalParent() {
+	time.Sleep(time.Second)
+	pid := os.Getppid()
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Errorf("master process: %s", err)
+	}
+
+	err = proc.Signal(syscall.SIGUSR1)
+	if err != nil {
+		fmt.Errorf("signaling master process: %s", err)
+	}
 }
 
 // ListenAndServeTLS mimics the std libraries http.ListenAndServeTLS
@@ -167,6 +184,9 @@ func (s *Spoon) ListenAndServeTLS(addr string, certFile string, keyFile string, 
 	tlsListener := tls.NewListener(gListener, tlsConfig)
 
 	server := http.Server{Addr: gListener.Addr().String(), Handler: handler, TLSConfig: tlsConfig}
+
+	go s.signalParent()
+
 	return server.Serve(tlsListener)
 }
 
@@ -200,6 +220,8 @@ func (s *Spoon) RunServer(server http.Server) error {
 		gListener = tls.NewListener(gListener, server.TLSConfig)
 	}
 
+	go s.signalParent()
+
 	return server.Serve(gListener)
 }
 
@@ -221,32 +243,45 @@ func (s *Spoon) startSlave() error {
 	s.slave.Stderr = os.Stderr
 	s.slave.ExtraFiles = s.fileDescriptors
 
+	signals := make(chan os.Signal)
+	signal.Notify(signals, syscall.SIGUSR1)
+
+	go func() {
+
+		// wait for slave to signal it is up and running
+		<-signals // slave notifies master process that it's up and running
+
+		fmt.Println("SIGUSR1 Recieved from slave")
+
+		signal.Stop(signals)
+
+		// will have to use current s.slave, if set, to trigger shutdown of old slave
+		if oldCmd != nil {
+			// shut down server! .. gracefully
+			oldCmd.Process.Signal(syscall.SIGTERM)
+		}
+
+		cmdwait := make(chan error)
+		go func() {
+			// wait for slave process to finish, one way or another
+			cmdwait <- s.slave.Wait()
+		}()
+
+		go func() {
+			select {
+			case err := <-cmdwait:
+				if err != nil {
+					fmt.Println("Slave Shutdown! Error:", err)
+				}
+
+				fmt.Println("Slave Shutdown Complete")
+			}
+		}()
+	}()
+
 	if err := s.slave.Start(); err != nil {
 		return fmt.Errorf("Failed to start slave process: %s", err)
 	}
-
-	// will have to use current s.slave, if set, to trigger shutdown of old slave
-	if oldCmd != nil {
-		// shut down server! .. gracefully
-		oldCmd.Process.Signal(syscall.SIGTERM)
-	}
-
-	cmdwait := make(chan error)
-	go func() {
-		// wait for slave process to finish, one way or another
-		cmdwait <- s.slave.Wait()
-	}()
-
-	go func() {
-		select {
-		case err := <-cmdwait:
-			if err != nil {
-				fmt.Println("Slave Shutdown! Error:", err)
-			}
-
-			fmt.Println("Slave Shutdown Complete")
-		}
-	}()
 
 	return nil
 }
