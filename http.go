@@ -30,19 +30,27 @@ func (s *Spoon) IsSlaveProcess() bool {
 // Run sets up the addr listener File Descriptors and runs the application
 func (s *Spoon) run(addr string) error {
 
+	fmt.Println("IN RUN")
+
 	if s.IsSlaveProcess() {
 		return nil
 	}
+
+	fmt.Println("HERE 1")
 
 	err := s.setupFileDescriptors(addr)
 	if err != nil {
 		return err
 	}
 
+	fmt.Println("HERE 2")
+
 	err = s.startSlave()
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("HERE 3")
 
 	go func() {
 		for {
@@ -57,6 +65,7 @@ func (s *Spoon) run(addr string) error {
 		}
 	}()
 
+	fmt.Println("Waiting for SIGTERM")
 	// wait for close signals here
 	signals := make(chan os.Signal)
 	signal.Notify(signals, syscall.SIGTERM)
@@ -154,12 +163,14 @@ func (s *Spoon) signalParent() {
 
 	proc, err := os.FindProcess(pid)
 	if err != nil {
-		fmt.Errorf("master process: %s", err)
+		er := fmt.Errorf("master process: %s", err)
+		fmt.Println("ERROR FINDING MASTER PROCESS:", er)
 	}
 
 	err = proc.Signal(syscall.SIGUSR1)
 	if err != nil {
-		fmt.Errorf("signaling master process: %s", err)
+		er := fmt.Errorf("signaling master process: %s", err)
+		fmt.Println("ERROR SIGNALING MASTER PROC", er)
 	}
 }
 
@@ -201,7 +212,7 @@ func strSliceContains(ss []string, s string) bool {
 
 // RunServer runs the provided server, if using TLS, TLSConfig must be setup prior to
 // calling this function
-func (s *Spoon) RunServer(server http.Server) error {
+func (s *Spoon) RunServer(server *http.Server) error {
 
 	gListener, err := s.listenSetup(server.Addr)
 	if err != nil {
@@ -227,10 +238,15 @@ func (s *Spoon) RunServer(server http.Server) error {
 
 func (s *Spoon) startSlave() error {
 
+	fmt.Println("STARTING SLAVE")
+	fmt.Println("FILE DESCRIPTORS:", s.fileDescriptors)
+
 	e := os.Environ()
 	e = append(e, envListenerFDS+"="+strconv.Itoa(len(s.fileDescriptors)))
 	e = append(e, envForceTerminationNS+"="+strconv.FormatInt(s.forceTerminateTimeout.Nanoseconds(), 10))
 	e = append(e, envKeepAliveNS+"="+strconv.FormatInt(s.keepaliveDuration.Nanoseconds(), 10))
+
+	fmt.Println("ENV VARS:", e)
 
 	// start server
 	oldCmd := s.slave
@@ -246,6 +262,7 @@ func (s *Spoon) startSlave() error {
 	signals := make(chan os.Signal)
 	signal.Notify(signals, syscall.SIGUSR1)
 
+	fmt.Println("STARTING routine to wait for SLAVE signal")
 	go func() {
 
 		// wait for slave to signal it is up and running
@@ -278,6 +295,8 @@ func (s *Spoon) startSlave() error {
 			}
 		}()
 	}()
+
+	fmt.Println("STARTING SERVICE")
 
 	if err := s.slave.Start(); err != nil {
 		return fmt.Errorf("Failed to start slave process: %s", err)
