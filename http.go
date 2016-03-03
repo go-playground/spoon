@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -19,12 +20,32 @@ const (
 	envKeepAliveNS        = "GO_LISTENER_KEEP_ALIVE_NS"
 )
 
+func (s *Spoon) getExtraParams(key string) (val string) {
+
+	val = os.Getenv(key)
+	if val != "" {
+		return
+	}
+
+	fmt.Println("ARGS:", os.Args)
+
+	// we added them to the end so.....look from end
+	for i := len(s.args); i >= 0; i-- {
+		if strings.HasPrefix(s.args[i], key) {
+			fmt.Println(s.args[i], "Found ", key, "returning", s.args[i][len(key)+1:])
+			return s.args[i][len(key)+1:]
+		}
+	}
+
+	return
+}
+
 // IsSlaveProcess returns if the current process is the main master process or slave,
 //
 // helps is determining when to load up all your handler dependencies i.e.
 // DB connections, caches...
 func (s *Spoon) IsSlaveProcess() bool {
-	return os.Getenv(envListenerFDS) != ""
+	return s.getExtraParams(envListenerFDS) != ""
 }
 
 // Run sets up the addr listener File Descriptors and runs the application
@@ -76,15 +97,15 @@ func (s *Spoon) run(addr string) error {
 }
 
 func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
-	fds := os.Getenv(envListenerFDS)
+	fds := s.getExtraParams(envListenerFDS)
 
 	// first server, let's call it master, to get started
 	if fds == "" {
 		return nil, s.run(addr)
 	}
 
-	forceTerm := os.Getenv(envForceTerminationNS)
-	keepAlive := os.Getenv(envKeepAliveNS)
+	forceTerm := s.getExtraParams(envForceTerminationNS)
+	keepAlive := s.getExtraParams(envKeepAliveNS)
 
 	if i, err := strconv.ParseInt(forceTerm, 10, 64); err == nil {
 		s.SetForceTerminationTimeout(time.Duration(i))
@@ -95,9 +116,9 @@ func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 	}
 
 	// is a slave process
-	// do slave logc to get File Descriptors
+	// do slave logic to get File Descriptors
 
-	// numFDs, err := strconv.Atoi(os.Getenv(envListenerFDS))
+	// numFDs, err := strconv.Atoi(s.getExtraParams(envListenerFDS))
 	// if err != nil {
 	// 	return fmt.Errorf("invalid %s integer", envListenerFDS)
 	// }
@@ -241,10 +262,19 @@ func (s *Spoon) startSlave() error {
 	fmt.Println("STARTING SLAVE")
 	fmt.Println("FILE DESCRIPTORS:", s.fileDescriptors)
 
+	fds := envListenerFDS + "=" + strconv.Itoa(len(s.fileDescriptors))
+	ft := envForceTerminationNS + "=" + strconv.FormatInt(s.forceTerminateTimeout.Nanoseconds(), 10)
+	ka := envKeepAliveNS + "=" + strconv.FormatInt(s.keepaliveDuration.Nanoseconds(), 10)
+
 	e := os.Environ()
-	e = append(e, envListenerFDS+"="+strconv.Itoa(len(s.fileDescriptors)))
-	e = append(e, envForceTerminationNS+"="+strconv.FormatInt(s.forceTerminateTimeout.Nanoseconds(), 10))
-	e = append(e, envKeepAliveNS+"="+strconv.FormatInt(s.keepaliveDuration.Nanoseconds(), 10))
+	e = append(e, fds, ft, ka)
+
+	// sometimes we may not have a shell to put ENV vars out to ( ya right you say )
+	// well I'm using the scratch docker container to run my go program so...also need
+	// to pass the above variables as command line params as a backup.
+
+	args := os.Args
+	args = append(args, fds, ft, ka)
 
 	fmt.Println("ENV VARS:", e)
 
@@ -253,7 +283,7 @@ func (s *Spoon) startSlave() error {
 
 	s.slave = exec.Command(s.binaryPath)
 	s.slave.Env = e
-	s.slave.Args = os.Args
+	s.slave.Args = args
 	s.slave.Stdin = os.Stdin
 	s.slave.Stdout = os.Stdout
 	s.slave.Stderr = os.Stderr

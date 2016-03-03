@@ -37,6 +37,7 @@ type Spoon struct {
 	keepaliveDuration        time.Duration
 	gracefulShutdownComplete chan struct{}
 	gracefulRestartChannel   chan struct{}
+	args                     []string
 }
 
 // New creates a new spoon instance
@@ -51,6 +52,7 @@ func New() *Spoon {
 		binaryPath:            executable,
 		forceTerminateTimeout: time.Minute * 5,
 		keepaliveDuration:     time.Minute * 3,
+		args:                  os.Args[1:],
 	}
 }
 
