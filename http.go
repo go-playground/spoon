@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -20,32 +19,8 @@ const (
 	envKeepAliveNS        = "GO_LISTENER_KEEP_ALIVE_NS"
 )
 
-func (s *Spoon) getExtraParams(key string) (val string) {
-
-	val = os.Getenv(key)
-	if val != "" {
-		return
-	}
-
-	fmt.Println("ARGS:", os.Args)
-	fmt.Println("SPOON ARGS:", s.args)
-
-	args := s.args[1:]
-
-	// we added them to the end so.....look from end
-	for i := len(args) - 1; i >= 0; i-- {
-
-		fmt.Println(args[i], "Finding ", key)
-
-		if strings.HasPrefix(args[i], key) {
-			val = args[i][len(key)+1:]
-
-			fmt.Println("Returning:", val)
-			return
-		}
-	}
-
-	return
+func (s *Spoon) getExtraParams(key string) string {
+	return os.Getenv(key)
 }
 
 // IsSlaveProcess returns if the current process is the main master process or slave,
@@ -59,27 +34,19 @@ func (s *Spoon) IsSlaveProcess() bool {
 // Run sets up the addr listener File Descriptors and runs the application
 func (s *Spoon) run(addr string) error {
 
-	fmt.Println("IN RUN")
-
 	if s.IsSlaveProcess() {
 		return nil
 	}
-
-	fmt.Println("HERE 1")
 
 	err := s.setupFileDescriptors(addr)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("HERE 2")
-
 	err = s.startSlave()
 	if err != nil {
 		return err
 	}
-
-	fmt.Println("HERE 3")
 
 	go func() {
 		for {
@@ -94,7 +61,6 @@ func (s *Spoon) run(addr string) error {
 		}
 	}()
 
-	fmt.Println("Waiting for SIGTERM")
 	// wait for close signals here
 	signals := make(chan os.Signal)
 	signal.Notify(signals, syscall.SIGTERM)
@@ -106,10 +72,7 @@ func (s *Spoon) run(addr string) error {
 
 func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 
-	fmt.Println("Running Listen Setup")
 	fds := s.getExtraParams(envListenerFDS)
-
-	fmt.Println("FDS:", fds)
 
 	// first server, let's call it master, to get started
 	if fds == "" {
@@ -247,7 +210,6 @@ func strSliceContains(ss []string, s string) bool {
 // calling this function
 func (s *Spoon) RunServer(server *http.Server) error {
 
-	fmt.Println("RUNNING SERVER...")
 	gListener, err := s.listenSetup(server.Addr)
 	if err != nil {
 		return err
@@ -272,9 +234,6 @@ func (s *Spoon) RunServer(server *http.Server) error {
 
 func (s *Spoon) startSlave() error {
 
-	fmt.Println("STARTING SLAVE")
-	fmt.Println("FILE DESCRIPTORS:", s.fileDescriptors)
-
 	fds := envListenerFDS + "=" + strconv.Itoa(len(s.fileDescriptors))
 	ft := envForceTerminationNS + "=" + strconv.FormatInt(s.forceTerminateTimeout.Nanoseconds(), 10)
 	ka := envKeepAliveNS + "=" + strconv.FormatInt(s.keepaliveDuration.Nanoseconds(), 10)
@@ -282,22 +241,12 @@ func (s *Spoon) startSlave() error {
 	e := os.Environ()
 	e = append(e, fds, ft, ka)
 
-	// sometimes we may not have a shell to put ENV vars out to ( ya right you say )
-	// well I'm using the scratch docker container to run my go program so...also need
-	// to pass the above variables as command line params as a backup.
-
-	args := os.Args
-	args = append(args, fds, ft, ka)
-
-	fmt.Println("ENV VARS:", e)
-	fmt.Println("NEW ARGS:", args)
-
 	// start server
 	oldCmd := s.slave
 
-	s.slave = exec.Command(s.binaryPath, args[1:]...)
+	s.slave = exec.Command(s.binaryPath)
 	s.slave.Env = e
-	s.slave.Args = args
+	s.slave.Args = os.Args
 	s.slave.Stdin = os.Stdin
 	s.slave.Stdout = os.Stdout
 	s.slave.Stderr = os.Stderr
@@ -306,7 +255,6 @@ func (s *Spoon) startSlave() error {
 	signals := make(chan os.Signal)
 	signal.Notify(signals, syscall.SIGUSR1)
 
-	fmt.Println("STARTING routine to wait for SLAVE signal")
 	go func() {
 
 		// wait for slave to signal it is up and running
@@ -339,8 +287,6 @@ func (s *Spoon) startSlave() error {
 			}
 		}()
 	}()
-
-	fmt.Println("STARTING SERVICE")
 
 	if err := s.slave.Start(); err != nil {
 		return fmt.Errorf("Failed to start slave process: %s", err)
