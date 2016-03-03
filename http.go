@@ -30,7 +30,7 @@ func (s *Spoon) getExtraParams(key string) (val string) {
 	fmt.Println("ARGS:", os.Args)
 
 	// we added them to the end so.....look from end
-	for i := len(s.args); i >= 0; i-- {
+	for i := len(s.args) - 1; i >= 0; i-- {
 		if strings.HasPrefix(s.args[i], key) {
 			fmt.Println(s.args[i], "Found ", key, "returning", s.args[i][len(key)+1:])
 			return s.args[i][len(key)+1:]
