@@ -100,7 +100,11 @@ func (s *Spoon) run(addr string) error {
 }
 
 func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
+
+	fmt.Println("Running Listen Setup")
 	fds := s.getExtraParams(envListenerFDS)
+
+	fmt.Println("FDS:", fds)
 
 	// first server, let's call it master, to get started
 	if fds == "" {
@@ -238,6 +242,7 @@ func strSliceContains(ss []string, s string) bool {
 // calling this function
 func (s *Spoon) RunServer(server *http.Server) error {
 
+	fmt.Println("RUNNING SERVER...")
 	gListener, err := s.listenSetup(server.Addr)
 	if err != nil {
 		return err
