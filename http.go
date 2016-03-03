@@ -28,9 +28,9 @@ func (s *Spoon) getExtraParams(key string) (val string) {
 	}
 
 	fmt.Println("ARGS:", os.Args)
-	fmt.Println("SPOON ARGS:", s.Args)
+	fmt.Println("SPOON ARGS:", s.args)
 
-	args = s.args[1:]
+	args := s.args[1:]
 
 	// we added them to the end so.....look from end
 	for i := len(args) - 1; i >= 0; i-- {
