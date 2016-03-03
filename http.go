@@ -28,12 +28,15 @@ func (s *Spoon) getExtraParams(key string) (val string) {
 	}
 
 	fmt.Println("ARGS:", os.Args)
+	fmt.Println("SPOON ARGS:", s.Args)
+
+	args = s.args[1:]
 
 	// we added them to the end so.....look from end
-	for i := len(s.args) - 1; i >= 0; i-- {
-		if strings.HasPrefix(s.args[i], key) {
-			fmt.Println(s.args[i], "Found ", key, "returning", s.args[i][len(key)+1:])
-			return s.args[i][len(key)+1:]
+	for i := len(args) - 1; i >= 0; i-- {
+		if strings.HasPrefix(args[i], key) {
+			fmt.Println(args[i], "Found ", key, "returning", args[i][len(key)+1:])
+			return args[i][len(key)+1:]
 		}
 	}
 
@@ -273,17 +276,18 @@ func (s *Spoon) startSlave() error {
 	// well I'm using the scratch docker container to run my go program so...also need
 	// to pass the above variables as command line params as a backup.
 
-	args := os.Args[1:]
+	args := os.Args
 	args = append(args, fds, ft, ka)
 
 	fmt.Println("ENV VARS:", e)
+	fmt.Println("NEW ARGS:", args)
 
 	// start server
 	oldCmd := s.slave
 
-	s.slave = exec.Command(s.binaryPath, args...)
+	s.slave = exec.Command(s.binaryPath, args[1:]...)
 	s.slave.Env = e
-	// s.slave.Args = args
+	s.slave.Args = args
 	s.slave.Stdin = os.Stdin
 	s.slave.Stdout = os.Stdout
 	s.slave.Stderr = os.Stderr

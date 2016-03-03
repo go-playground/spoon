@@ -52,7 +52,7 @@ func New() *Spoon {
 		binaryPath:            executable,
 		forceTerminateTimeout: time.Minute * 5,
 		keepaliveDuration:     time.Minute * 3,
-		args:                  os.Args[1:],
+		args:                  os.Args,
 	}
 }
 
