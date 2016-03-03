@@ -273,7 +273,7 @@ func (s *Spoon) startSlave() error {
 	// well I'm using the scratch docker container to run my go program so...also need
 	// to pass the above variables as command line params as a backup.
 
-	args := os.Args
+	args := os.Args[1:]
 	args = append(args, fds, ft, ka)
 
 	fmt.Println("ENV VARS:", e)
@@ -281,9 +281,9 @@ func (s *Spoon) startSlave() error {
 	// start server
 	oldCmd := s.slave
 
-	s.slave = exec.Command(s.binaryPath)
+	s.slave = exec.Command(s.binaryPath, args...)
 	s.slave.Env = e
-	s.slave.Args = args
+	// s.slave.Args = args
 	s.slave.Stdin = os.Stdin
 	s.slave.Stdout = os.Stdout
 	s.slave.Stderr = os.Stderr
