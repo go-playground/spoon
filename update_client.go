@@ -45,6 +45,14 @@ func (s *Spoon) AutoUpdate(updateStrategy UpdateStrategy, updateURL string, inte
 		}
 	}
 
+	b, err := ioutil.ReadFile(s.binaryPath)
+	if err != nil {
+		return nil, err
+	}
+
+	checksum := GenerateChecksum(b)
+
+	s.lastUpdateChecksum = checksum
 	s.updateRequest = req
 	s.updateInterval = interval
 	s.updateCompleted = make(chan struct{})
