@@ -11,10 +11,32 @@ type updateHandler struct {
 	updateStrategy UpdateStrategy
 }
 
+type wrapHandler struct {
+	preHandler PreHandler
+	next       http.Handler
+}
+
+func (wh *wrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	wh.preHandler(wh.next, w, r)
+}
+
+// PreHandler used if some sort of pre auth check or something needs to be done prior
+// for checking for an update.
+type PreHandler func(next http.Handler, w http.ResponseWriter, r *http.Request)
+
 // ServerAutoUpdate calls ServerAutoUpdateHandler to get the handler
 // and runs an http server in another goroutine
-func ServerAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string) {
+func ServerAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string, preHandler PreHandler) {
+
 	handler := ServerAutoUpdateHandler(updateStrategy, filename)
+
+	if preHandler != nil {
+		next := handler
+		handler = &wrapHandler{
+			preHandler: preHandler,
+			next:       next,
+		}
+	}
 
 	http.Handle(url, handler)
 	go http.ListenAndServe(addr, nil)
@@ -22,8 +44,17 @@ func ServerAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, fi
 
 // ServerTLSAutoUpdate calls ServerAutoUpdateHandler to get the handler
 // and runs an http TLS server in another goroutine
-func ServerTLSAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string, certFile string, keyFile string) {
+func ServerTLSAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string, certFile string, keyFile string, preHandler PreHandler) {
+
 	handler := ServerAutoUpdateHandler(updateStrategy, filename)
+
+	if preHandler != nil {
+		next := handler
+		handler = &wrapHandler{
+			preHandler: preHandler,
+			next:       next,
+		}
+	}
 
 	http.Handle(url, handler)
 	go http.ListenAndServeTLS(addr, certFile, keyFile, nil)
