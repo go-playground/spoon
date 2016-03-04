@@ -4,7 +4,7 @@ import "github.com/go-playground/spoon"
 
 func main() {
 
-	spoon.ServerAutoUpdate(spoon.FullBinary, "/app/updates", ":3006", "files/client")
+	spoon.ServerAutoUpdate(spoon.FullBinary, "/app/updates", ":3006", "files/client", nil)
 
 	close := make(chan bool)
 
