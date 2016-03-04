@@ -52,6 +52,7 @@ func (s *Spoon) AutoUpdate(updateStrategy UpdateStrategy, updateURL string, inte
 
 	checksum := GenerateChecksum(b)
 
+	s.originalChecksum = checksum
 	s.lastUpdateChecksum = checksum
 	s.updateRequest = req
 	s.updateInterval = interval

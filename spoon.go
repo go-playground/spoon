@@ -35,6 +35,7 @@ const (
 type Spoon struct {
 	updateStrategy           UpdateStrategy
 	updateInterval           time.Duration
+	originalChecksum         string
 	lastUpdateChecksum       string
 	updateRequest            *http.Request
 	updateCompleted          UpdatePerformed
@@ -103,4 +104,11 @@ func (s *Spoon) SetKeepAliveDuration(d time.Duration) {
 // all your frontends are already updated and waiting.
 func (s *Spoon) SetGracefulRestartChannel(ch chan struct{}) {
 	s.gracefulRestartChannel = ch
+}
+
+// HasBeenUpdated returns if the running binary has been updated since it's been started.
+// good for applications that may need manual intervention to restart, this will allow
+// the application to know it needs restarting and notify user ( think how google chrome does it )
+func (s *Spoon) HasBeenUpdated() bool {
+	return s.originalChecksum != s.lastUpdateChecksum
 }
