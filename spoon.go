@@ -1,6 +1,7 @@
 package spoon
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -8,6 +9,14 @@ import (
 
 	"github.com/kardianos/osext"
 )
+
+// LogFunc is the function that all log messages get sent to,
+// it is overridable using the RegisterLogFunc on the spoon instance.
+type LogFunc func(msg string)
+
+// ErrorFunc is the function that all error messages get sent to,
+// is is overridable using the RegisterErrorFunc
+type ErrorFunc func(err error)
 
 // UpdateStrategy specifies the Update Strategy
 // NOTE: All strategies use Checksum + CryptoGraphic signature
@@ -37,6 +46,8 @@ type Spoon struct {
 	keepaliveDuration        time.Duration
 	gracefulShutdownComplete chan struct{}
 	gracefulRestartChannel   chan struct{}
+	logFunc                  LogFunc
+	errFunc                  ErrorFunc
 }
 
 // New creates a new spoon instance
@@ -51,7 +62,25 @@ func New() *Spoon {
 		binaryPath:            executable,
 		forceTerminateTimeout: time.Minute * 5,
 		keepaliveDuration:     time.Minute * 3,
+		logFunc: func(msg string) {
+			log.Println(msg)
+		},
+		errFunc: func(err error) {
+			log.Println(err)
+		},
 	}
+}
+
+// RegisterErrorFunc registers a custom error function which all errors
+// will be sent to and the calling program can handle any way they wish
+func (s *Spoon) RegisterErrorFunc(fn ErrorFunc) {
+	s.errFunc = fn
+}
+
+// RegisterLogFunc registers a custom log function which all logs
+// will be sent to and the calling program can handle any way they wish
+func (s *Spoon) RegisterLogFunc(fn LogFunc) {
+	s.logFunc = fn
 }
 
 // SetForceTerminationTimeout sets the duartion to wait before force

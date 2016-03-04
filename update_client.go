@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -19,7 +18,7 @@ import (
 func (s *Spoon) AutoUpdate(updateStrategy UpdateStrategy, updateURL string, interval time.Duration, addlRequestHeaders map[string]string) (UpdatePerformed, error) {
 
 	if s.isAutoUpdating {
-		panic("Can only setup one AutoUpdate per application")
+		return nil, errors.New("Can only setup one AutoUpdate per application")
 	}
 
 	if s.IsSlaveProcess() {
@@ -64,7 +63,7 @@ func (s *Spoon) autoUpdater() {
 		case <-time.After(s.updateInterval):
 			// do request
 
-			fmt.Println("Checking for Update")
+			s.logFunc("Checking for Update")
 
 			client := &http.Client{}
 
@@ -72,14 +71,14 @@ func (s *Spoon) autoUpdater() {
 
 			resp, err := client.Do(s.updateRequest)
 			if err != nil {
-				log.Println("ERROR Fetching Updates:", err)
+				s.logFunc(fmt.Sprint("ERROR Fetching Updates:", err))
 				continue
 			}
 			defer resp.Body.Close()
 
 			checksum := resp.Header.Get("checksum")
 			if checksum == "" {
-				fmt.Println("No new files for update")
+				s.logFunc("No new files for update")
 				continue
 			}
 
@@ -91,38 +90,38 @@ func (s *Spoon) autoUpdater() {
 
 			resp, err = client.Do(s.updateRequest)
 			if err != nil {
-				log.Println("ERR:", err)
+				s.logFunc(fmt.Sprint("ERR:", err))
 			}
 			defer resp.Body.Close()
 
 			checksum = resp.Header.Get("checksum")
 			if checksum == "" {
-				fmt.Println("No new files for update")
+				s.logFunc("No new files for update")
 				continue
 			}
 
 			// make this a helper function
 			b, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
-				log.Println("ERROR Reading Body:", err)
+				s.logFunc(fmt.Sprint("ERROR Reading Body:", err))
 				continue
 			}
 
 			recvChecksum := GenerateChecksum(b)
 
 			if checksum != recvChecksum {
-				fmt.Println("checksum's do not match, checking again at the desired interval.")
+				s.logFunc("checksum's do not match, checking again at the desired interval.")
 				continue
 			}
 
-			fmt.Println("Checksums match! processing")
+			s.logFunc("Checksums match! processing")
 
 			if s.updateStrategy == FullBinary {
 
 				if err := update.Apply(bytes.NewBuffer(b), update.Options{}); err != nil {
 
 					if rerr := update.RollbackError(err); rerr != nil {
-						fmt.Printf("Failed to rollback from bad update: %v\n", rerr)
+						s.errFunc(&BinaryUpdateError{innerError: fmt.Errorf("Failed to rollback from bad update: %v\n", rerr)})
 					}
 				}
 

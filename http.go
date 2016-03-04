@@ -52,11 +52,12 @@ func (s *Spoon) run(addr string) error {
 		for {
 			<-s.gracefulRestartChannel
 
-			fmt.Println("Graceful restart triggered")
+			s.logFunc("Graceful restart triggered")
+
 			// graceful restart triggered
 			err := s.startSlave()
 			if err != nil {
-				fmt.Println("ERROR starting new slave gracefully", err)
+				s.errFunc(&SlaveStartError{innerError: fmt.Errorf("ERROR starting new slave gracefully %s", err)})
 			}
 		}
 	}()
@@ -104,7 +105,7 @@ func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 
 	l, err := net.FileListener(f)
 	if err != nil {
-		return nil, fmt.Errorf("failed to inherit file descriptor: %d", 0)
+		return nil, &FileDescriptorError{innerError: fmt.Errorf("failed to inherit file descriptor: %d", 0)}
 	}
 	// }
 
@@ -118,21 +119,21 @@ func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 	go func() {
 		<-signals
 
-		fmt.Println("TERMINATE SIGNAL RECEIVED", s.forceTerminateTimeout)
+		s.logFunc(fmt.Sprint("TERMINATE SIGNAL RECEIVED", s.forceTerminateTimeout))
 
 		go func() {
 			select {
 			case <-s.gracefulShutdownComplete:
-				fmt.Println("Gracefully shutdown")
+				s.logFunc("Gracefully shutdown")
 				os.Exit(0)
 			// this is most likely going to be hit if your app uses websockets
 			case <-time.After(s.forceTerminateTimeout):
-				fmt.Println("Force Shutdown!")
+				s.logFunc("Force Shutdown!")
 				os.Exit(1)
 			}
 		}()
 
-		fmt.Println("Closing Slave Listener")
+		s.logFunc("Closing Slave Listener")
 
 		gListener.Close()
 	}()
@@ -159,14 +160,12 @@ func (s *Spoon) signalParent() {
 
 	proc, err := os.FindProcess(pid)
 	if err != nil {
-		er := fmt.Errorf("master process: %s", err)
-		fmt.Println("ERROR FINDING MASTER PROCESS:", er)
+		s.errFunc(&SignalParentError{fmt.Errorf("ERROR FINDING MASTER PROCESS: %s", err)})
 	}
 
 	err = proc.Signal(syscall.SIGUSR1)
 	if err != nil {
-		er := fmt.Errorf("signaling master process: %s", err)
-		fmt.Println("ERROR SIGNALING MASTER PROC", er)
+		s.errFunc(&SignalParentError{fmt.Errorf("ERROR SIGNALING MASTER PROC: %s", err)})
 	}
 }
 
@@ -185,7 +184,7 @@ func (s *Spoon) ListenAndServeTLS(addr string, certFile string, keyFile string, 
 
 	tlsConfig.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	tlsListener := tls.NewListener(gListener, tlsConfig)
@@ -260,7 +259,7 @@ func (s *Spoon) startSlave() error {
 		// wait for slave to signal it is up and running
 		<-signals // slave notifies master process that it's up and running
 
-		fmt.Println("SIGUSR1 Recieved from slave")
+		s.logFunc("SIGUSR1 Recieved from slave")
 
 		signal.Stop(signals)
 
@@ -280,16 +279,16 @@ func (s *Spoon) startSlave() error {
 			select {
 			case err := <-cmdwait:
 				if err != nil {
-					fmt.Println("Slave Shutdown! Error:", err)
+					s.errFunc(&SlaveShutdownError{innerError: err})
 				}
 
-				fmt.Println("Slave Shutdown Complete")
+				s.logFunc("Slave Shutdown Complete")
 			}
 		}()
 	}()
 
 	if err := s.slave.Start(); err != nil {
-		return fmt.Errorf("Failed to start slave process: %s", err)
+		return &SlaveStartError{innerError: err}
 	}
 
 	return nil
@@ -300,21 +299,21 @@ func (s *Spoon) setupFileDescriptors(addr string) error {
 
 	a, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("Invalid address %s (%s)", addr, err)
+		return &FileDescriptorError{innerError: fmt.Errorf("Invalid address %s (%s)", addr, err)}
 	}
 
 	l, err := net.ListenTCP("tcp", a)
 	if err != nil {
-		return err
+		return &FileDescriptorError{innerError: err}
 	}
 
 	f, err := l.File()
 	if err != nil {
-		return fmt.Errorf("Failed to retreive fd for: %s (%s)", addr, err)
+		return &FileDescriptorError{innerError: fmt.Errorf("Failed to retreive fd for: %s (%s)", addr, err)}
 	}
 
 	if err := l.Close(); err != nil {
-		return fmt.Errorf("Failed to close listener for: %s (%s)", addr, err)
+		return &FileDescriptorError{innerError: fmt.Errorf("Failed to close listener for: %s (%s)", addr, err)}
 	}
 
 	s.fileDescriptors[0] = f
