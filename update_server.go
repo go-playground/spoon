@@ -9,6 +9,7 @@ import (
 type updateHandler struct {
 	filename       string
 	updateStrategy UpdateStrategy
+	url            string
 }
 
 type wrapHandler struct {
@@ -28,7 +29,7 @@ type PreHandler func(next http.Handler, w http.ResponseWriter, r *http.Request)
 // and runs an http server in another goroutine
 func ServerAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string, preHandler PreHandler) {
 
-	handler := ServerAutoUpdateHandler(updateStrategy, filename)
+	handler := ServerAutoUpdateHandler(updateStrategy, filename, url)
 
 	if preHandler != nil {
 		next := handler
@@ -38,15 +39,14 @@ func ServerAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, fi
 		}
 	}
 
-	http.Handle(url, handler)
-	go http.ListenAndServe(addr, nil)
+	go http.ListenAndServe(addr, handler)
 }
 
 // ServerTLSAutoUpdate calls ServerAutoUpdateHandler to get the handler
 // and runs an http TLS server in another goroutine
 func ServerTLSAutoUpdate(updateStrategy UpdateStrategy, url string, addr string, filename string, certFile string, keyFile string, preHandler PreHandler) {
 
-	handler := ServerAutoUpdateHandler(updateStrategy, filename)
+	handler := ServerAutoUpdateHandler(updateStrategy, filename, url)
 
 	if preHandler != nil {
 		next := handler
@@ -56,24 +56,24 @@ func ServerTLSAutoUpdate(updateStrategy UpdateStrategy, url string, addr string,
 		}
 	}
 
-	http.Handle(url, handler)
-	go http.ListenAndServeTLS(addr, certFile, keyFile, nil)
+	go http.ListenAndServeTLS(addr, certFile, keyFile, handler)
 }
 
 // ServerAutoUpdateHandler returns the servers http.HandlerFunc
 // for registration in your ServerMux if you wish to avoid setting up your own
 // you may call ServerAutoUpdate to start a server within another goroutine.
-func ServerAutoUpdateHandler(updateStrategy UpdateStrategy, filename string) http.Handler {
+func ServerAutoUpdateHandler(updateStrategy UpdateStrategy, filename string, url string) http.Handler {
 
 	return &updateHandler{
 		filename:       filename,
 		updateStrategy: updateStrategy,
+		url:            url,
 	}
 }
 
 func (hf *updateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	if r.Method != "GET" && r.Method != "HEAD" {
+	if (r.Method != "GET" && r.Method != "HEAD") || r.URL.Path != hf.url {
 		return
 	}
 
