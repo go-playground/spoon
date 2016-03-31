@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/kardianos/osext"
@@ -49,6 +50,9 @@ type Spoon struct {
 	gracefulRestartChannel   chan struct{}
 	logFunc                  LogFunc
 	errFunc                  ErrorFunc
+	servers                  []*Server
+	fdIndex                  int
+	m                        *sync.Mutex
 }
 
 // New creates a new spoon instance
@@ -63,6 +67,9 @@ func New() *Spoon {
 		binaryPath:            executable,
 		forceTerminateTimeout: time.Minute * 5,
 		keepaliveDuration:     time.Minute * 3,
+		servers:               make([]*Server, 0),
+		fdIndex:               3,
+		m:                     new(sync.Mutex),
 		logFunc: func(msg string) {
 			log.Println(msg)
 		},

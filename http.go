@@ -31,53 +31,18 @@ func (s *Spoon) IsSlaveProcess() bool {
 	return s.getExtraParams(envListenerFDS) != ""
 }
 
-// Run sets up the addr listener File Descriptors and runs the application
-func (s *Spoon) run(addr string) error {
-
-	if s.IsSlaveProcess() {
-		return nil
-	}
-
-	err := s.setupFileDescriptors(addr)
-	if err != nil {
-		return err
-	}
-
-	err = s.startSlave()
-	if err != nil {
-		return err
-	}
-
-	go func() {
-		for {
-			<-s.gracefulRestartChannel
-
-			s.logFunc("Graceful restart triggered")
-
-			// graceful restart triggered
-			err := s.startSlave()
-			if err != nil {
-				s.errFunc(&SlaveStartError{innerError: fmt.Errorf("ERROR starting new slave gracefully %s", err)})
-			}
-		}
-	}()
-
-	// wait for close signals here
-	signals := make(chan os.Signal)
-	signal.Notify(signals, syscall.SIGTERM)
-
-	<-signals
-
-	return nil
-}
-
 func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 
 	fds := s.getExtraParams(envListenerFDS)
 
 	// first server, let's call it master, to get started
-	if fds == "" {
-		return nil, s.run(addr)
+	if fds == "" { // if not slave
+		err := s.setupFileDescriptors(addr)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, nil
 	}
 
 	forceTerm := s.getExtraParams(envForceTerminationNS)
@@ -91,52 +56,16 @@ func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 		s.SetKeepAliveDuration(time.Duration(i))
 	}
 
-	// is a slave process
-	// do slave logic to get File Descriptors
-
-	// numFDs, err := strconv.Atoi(s.getExtraParams(envListenerFDS))
-	// if err != nil {
-	// 	return fmt.Errorf("invalid %s integer", envListenerFDS)
-	// }
-
-	// for i := 0; i < numFDs; i++ {
-
-	f := os.NewFile(uintptr(3), "")
+	f := os.NewFile(uintptr(s.fdIndex), "")
+	s.fdIndex++
 
 	l, err := net.FileListener(f)
 	if err != nil {
-		return nil, &FileDescriptorError{innerError: fmt.Errorf("failed to inherit file descriptor: %d", 0)}
+		fmt.Println(err)
+		return nil, &FileDescriptorError{innerError: fmt.Errorf("failed to inherit file descriptor: %d error: %s", s.fdIndex, err)}
 	}
-	// }
 
 	gListener := newGracefulListener(l, s.gracefulShutdownComplete, s.keepaliveDuration)
-
-	// TODO: don't forget to setup Signal listening from syscall.SIGTERM to TRIGGER the restart
-	//
-	signals := make(chan os.Signal)
-	signal.Notify(signals, syscall.SIGTERM)
-
-	go func() {
-		<-signals
-
-		s.logFunc(fmt.Sprint("TERMINATE SIGNAL RECEIVED", s.forceTerminateTimeout))
-
-		go func() {
-			select {
-			case <-s.gracefulShutdownComplete:
-				s.logFunc("Gracefully shutdown")
-				os.Exit(0)
-			// this is most likely going to be hit if your app uses websockets
-			case <-time.After(s.forceTerminateTimeout):
-				s.logFunc("Force Shutdown!")
-				os.Exit(1)
-			}
-		}()
-
-		s.logFunc("Closing Slave Listener")
-
-		gListener.Close()
-	}()
 
 	return gListener, nil
 }
@@ -144,14 +73,29 @@ func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 // ListenAndServe mimics the std libraries http.ListenAndServe
 func (s *Spoon) ListenAndServe(addr string, handler http.Handler) error {
 
+	s.m.Lock()
+	defer s.m.Unlock()
+
 	gListener, err := s.listenSetup(addr)
 	if err != nil {
 		return err
 	}
 
-	go s.signalParent()
+	if !s.IsSlaveProcess() {
+		return nil
+	}
 
-	return http.Serve(gListener, handler)
+	server := &http.Server{Addr: gListener.Addr().String(), Handler: handler}
+
+	srv := &Server{
+		server:   server,
+		listener: gListener,
+		handler:  handler,
+	}
+
+	s.servers = append(s.servers, srv)
+
+	return nil
 }
 
 func (s *Spoon) signalParent() {
@@ -172,9 +116,16 @@ func (s *Spoon) signalParent() {
 // ListenAndServeTLS mimics the std libraries http.ListenAndServeTLS
 func (s *Spoon) ListenAndServeTLS(addr string, certFile string, keyFile string, handler http.Handler) error {
 
+	s.m.Lock()
+	defer s.m.Unlock()
+
 	gListener, err := s.listenSetup(addr)
 	if err != nil {
 		return err
+	}
+
+	if !s.IsSlaveProcess() {
+		return nil
 	}
 
 	tlsConfig := &tls.Config{
@@ -189,29 +140,32 @@ func (s *Spoon) ListenAndServeTLS(addr string, certFile string, keyFile string, 
 
 	tlsListener := tls.NewListener(gListener, tlsConfig)
 
-	server := http.Server{Addr: gListener.Addr().String(), Handler: handler, TLSConfig: tlsConfig}
+	server := &http.Server{Addr: gListener.Addr().String(), Handler: handler, TLSConfig: tlsConfig}
 
-	go s.signalParent()
-
-	return server.Serve(tlsListener)
-}
-
-func strSliceContains(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
+	srv := &Server{
+		server:   server,
+		listener: tlsListener,
 	}
-	return false
+
+	s.servers = append(s.servers, srv)
+
+	return nil
 }
 
 // RunServer runs the provided server, if using TLS, TLSConfig must be setup prior to
 // calling this function
 func (s *Spoon) RunServer(server *http.Server) error {
 
+	s.m.Lock()
+	defer s.m.Unlock()
+
 	gListener, err := s.listenSetup(server.Addr)
 	if err != nil {
 		return err
+	}
+
+	if !s.IsSlaveProcess() {
+		return nil
 	}
 
 	if server.TLSConfig != nil {
@@ -226,9 +180,23 @@ func (s *Spoon) RunServer(server *http.Server) error {
 		gListener = tls.NewListener(gListener, server.TLSConfig)
 	}
 
-	go s.signalParent()
+	srv := &Server{
+		server:   server,
+		listener: gListener,
+	}
 
-	return server.Serve(gListener)
+	s.servers = append(s.servers, srv)
+
+	return nil
+}
+
+func strSliceContains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Spoon) startSlave() error {
@@ -295,7 +263,10 @@ func (s *Spoon) startSlave() error {
 }
 
 func (s *Spoon) setupFileDescriptors(addr string) error {
-	s.fileDescriptors = make([]*os.File, 1)
+
+	if s.fileDescriptors == nil {
+		s.fileDescriptors = make([]*os.File, 0)
+	}
 
 	a, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
@@ -316,7 +287,88 @@ func (s *Spoon) setupFileDescriptors(addr string) error {
 		return &FileDescriptorError{innerError: fmt.Errorf("Failed to close listener for: %s (%s)", addr, err)}
 	}
 
-	s.fileDescriptors[0] = f
+	s.fileDescriptors = append(s.fileDescriptors, f)
+
+	return nil
+}
+
+// Go starts up services + listeners and blocks until complete
+func (s *Spoon) Go() error {
+
+	s.m.Lock()
+	defer s.m.Unlock()
+
+	if s.IsSlaveProcess() {
+
+		done := make(chan bool)
+
+		for _, s := range s.servers {
+			go s.server.Serve(s.listener)
+		}
+
+		// TODO: don't forget to setup Signal listening from syscall.SIGTERM to TRIGGER the restart
+		signals := make(chan os.Signal)
+		signal.Notify(signals, syscall.SIGTERM)
+
+		go func() {
+			<-signals
+
+			s.logFunc(fmt.Sprint("TERMINATE SIGNAL RECEIVED", s.forceTerminateTimeout))
+
+			closed := make(chan int)
+
+			go func() {
+				select {
+				case <-s.gracefulShutdownComplete:
+					s.logFunc("Gracefully shutdown")
+					closed <- 0
+				// this is most likely going to be hit if your app uses websockets
+				case <-time.After(s.forceTerminateTimeout):
+					s.logFunc("Force Shutdown!")
+					closed <- 1
+				}
+			}()
+
+			s.logFunc("Closing Slave Listener(s)")
+
+			for _, s := range s.servers {
+				go s.listener.Close()
+			}
+
+			os.Exit(<-closed)
+		}()
+
+		go s.signalParent()
+
+		<-done
+
+		return nil
+	}
+
+	err := s.startSlave()
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		for {
+			<-s.gracefulRestartChannel
+
+			s.logFunc("Graceful restart triggered")
+
+			// graceful restart triggered
+			err := s.startSlave()
+			if err != nil {
+				s.errFunc(&SlaveStartError{innerError: fmt.Errorf("ERROR starting new slave gracefully %s", err)})
+			}
+		}
+	}()
+
+	// wait for close signals here
+	signals := make(chan os.Signal)
+	signal.Notify(signals, syscall.SIGTERM)
+
+	<-signals
 
 	return nil
 }
