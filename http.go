@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -43,6 +44,10 @@ func (s *Spoon) listenSetup(addr string) (net.Listener, error) {
 		}
 
 		return nil, nil
+	}
+
+	if s.gracefulShutdownComplete == nil {
+		s.gracefulShutdownComplete = make(chan struct{})
 	}
 
 	forceTerm := s.getExtraParams(envForceTerminationNS)
@@ -300,10 +305,11 @@ func (s *Spoon) Go() error {
 
 	if s.IsSlaveProcess() {
 
+		threshold := len(s.servers)
 		done := make(chan bool)
 
-		for _, s := range s.servers {
-			go s.server.Serve(s.listener)
+		for _, srv := range s.servers {
+			go srv.server.Serve(srv.listener)
 		}
 
 		// TODO: don't forget to setup Signal listening from syscall.SIGTERM to TRIGGER the restart
@@ -318,14 +324,27 @@ func (s *Spoon) Go() error {
 			closed := make(chan int)
 
 			go func() {
-				select {
-				case <-s.gracefulShutdownComplete:
-					s.logFunc("Gracefully shutdown")
-					closed <- 0
-				// this is most likely going to be hit if your app uses websockets
-				case <-time.After(s.forceTerminateTimeout):
-					s.logFunc("Force Shutdown!")
-					closed <- 1
+				i := 0
+				mt := new(sync.Mutex)
+
+				for {
+					select {
+					case <-s.gracefulShutdownComplete:
+						mt.Lock()
+						i++
+
+						s.logFunc(fmt.Sprintf("Gracefully shutdown server %d", i))
+
+						if i == threshold {
+							closed <- 0
+						}
+
+						mt.Unlock()
+					// this is most likely going to be hit if your app uses websockets
+					case <-time.After(s.forceTerminateTimeout):
+						s.logFunc("Force Shutdown!")
+						closed <- 1
+					}
 				}
 			}()
 
@@ -337,6 +356,11 @@ func (s *Spoon) Go() error {
 
 			os.Exit(<-closed)
 		}()
+
+		// let's just wait a few seconds to ensure that the go srv.server.Serve(srv.listener) have completed startup
+		// I don't know of a way to tell if they are already running or not 100%, the stdlib has no way to hook into
+		// it that I know of.
+		time.Sleep(time.Second * 3)
 
 		go s.signalParent()
 
