@@ -87,11 +87,12 @@ func (s *Spoon) autoUpdater() {
 
 			checksum := resp.Header.Get("checksum")
 			if checksum == "" {
-				s.logFunc("No new files for update")
+				s.logFunc("No files for update")
 				continue
 			}
 
 			if s.lastUpdateChecksum == checksum {
+				s.logFunc("No new files for update")
 				continue
 			}
 
@@ -129,12 +130,31 @@ func (s *Spoon) autoUpdater() {
 
 				if err := update.Apply(bytes.NewBuffer(b), update.Options{}); err != nil {
 
+					s.errFunc(errors.New("Issue updating binary, attempting rollback:" + err.Error()))
+
 					if rerr := update.RollbackError(err); rerr != nil {
 						s.errFunc(&BinaryUpdateError{innerError: fmt.Errorf("Failed to rollback from bad update: %v\n", rerr)})
 					}
 				}
 
 			}
+
+			// Double Checking Binary Checksum after update!!
+			// better be the same! otherwise we have to try something else....
+
+			b, err = ioutil.ReadFile(s.binaryPath)
+			if err != nil {
+				s.errFunc(errors.New("Error Checking Binary after update:" + err.Error()))
+			}
+
+			if err == nil {
+				cs := GenerateChecksum(b)
+
+				if cs != checksum {
+					s.errFunc(errors.New("Binary Not Updated! Even though no errors occured!"))
+				}
+			}
+
 			// else {
 			// 	if err := update.Apply(bytes.NewBuffer(b), update.Options{
 			// 		Patcher: update.NewBSDiffPatcher(),
