@@ -337,7 +337,6 @@ func (s *Spoon) Go() error {
 
 						if i == threshold {
 							s.logFunc("Last server gracefully shutdown, exiting with status 0")
-							mt.Unlock()
 							closed <- 0
 						}
 
