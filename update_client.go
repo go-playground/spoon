@@ -128,9 +128,9 @@ func (s *Spoon) autoUpdater() {
 
 			if s.updateStrategy == FullBinary {
 
-				if err := update.Apply(bytes.NewBuffer(b), update.Options{}); err != nil {
+				if err := update.Apply(bytes.NewBuffer(b), update.Options{TargetPath: s.binaryPath}); err != nil {
 
-					s.errFunc(errors.New("Issue updating binary, attempting rollback:" + err.Error()))
+					s.errFunc(errors.New("Issue updating binary:" + err.Error()))
 
 					if rerr := update.RollbackError(err); rerr != nil {
 						s.errFunc(&BinaryUpdateError{innerError: fmt.Errorf("Failed to rollback from bad update: %v\n", rerr)})
