@@ -128,6 +128,7 @@ func (s *Spoon) autoUpdater() {
 
 			if s.updateStrategy == FullBinary {
 
+				// if err := update.Apply(bytes.NewBuffer(b), update.Options{}); err != nil {
 				if err := update.Apply(bytes.NewBuffer(b), update.Options{TargetPath: s.binaryPath}); err != nil {
 
 					s.errFunc(errors.New("Issue updating binary:" + err.Error()))

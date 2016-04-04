@@ -333,9 +333,11 @@ func (s *Spoon) Go() error {
 						mt.Lock()
 						i++
 
-						s.logFunc(fmt.Sprintf("Gracefully shutdown server %d", i))
+						s.logFunc(fmt.Sprintf("Gracefully shutdown server %d of %d", i, threshold))
 
 						if i == threshold {
+							s.logFunc("Last server gracefully shutdown, exiting with status 0")
+							mt.Unlock()
 							closed <- 0
 						}
 
