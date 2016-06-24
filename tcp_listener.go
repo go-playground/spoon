@@ -49,6 +49,8 @@ func (l *tcpListener) Accept() (net.Conn, error) {
 // blocking wait for close
 func (l *tcpListener) Close() error {
 
+	log.Println("Closing Listener:", l.Addr())
+
 	//stop accepting connections - release fd
 	err := l.TCPListener.Close()
 	c := make(chan struct{})
@@ -63,6 +65,7 @@ func (l *tcpListener) Close() error {
 	// closed gracefully
 	case <-time.After(l.forceTimeoutDuration):
 		l.SetDeadline(time.Now())
+		log.Println("timeout reached, force shutdown")
 		// not waiting any longer, letting this go.
 		// spoon will think it's been closed and when
 		// the process dies, connections will get cut

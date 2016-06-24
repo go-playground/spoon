@@ -1,32 +1,29 @@
 package spoon
 
 import (
+	"log"
 	"net"
 	"os"
 	"sync"
 	"time"
 )
 
-func newZeroUnixListenerListener(l net.UnixListener, shutdownComplete chan struct{}, keepaliveDuration time.Duration) *zeroUnixListenerListener {
-	return &zeroUnixListenerListener{
-		UnixListener:      l,
-		keepaliveDuration: keepaliveDuration,
-		shutdownComplete:  shutdownComplete,
-		wg:                new(sync.WaitGroup),
+func newUnixListener(l net.UnixListener) *unixListener {
+	return &unixListener{
+		UnixListener:         l,
+		forceTimeoutDuration: time.Minute * 5,
 	}
 }
 
-type zeroUnixListenerListener struct {
+type unixListener struct {
 	net.UnixListener
-	keepaliveDuration time.Duration
-	shutdownComplete  chan struct{}
-	wg                *sync.WaitGroup
-	closeError        error
+	forceTimeoutDuration time.Duration
+	wg                   sync.WaitGroup
 }
 
-var _ net.Listener = new(zeroUnixListenerListener)
+var _ net.Listener = new(unixListener)
 
-func (l *zeroUnixListenerListener) Accept() (net.Conn, error) {
+func (l *unixListener) Accept() (net.Conn, error) {
 
 	conn, err := l.UnixListener.AcceptUnix()
 	if err != nil {
@@ -44,19 +41,34 @@ func (l *zeroUnixListenerListener) Accept() (net.Conn, error) {
 }
 
 // blocking wait for close
-func (l *zeroUnixListenerListener) Close() error {
+func (l *unixListener) Close() error {
+
+	log.Println("Closing Listener:", l.Addr())
 
 	//stop accepting connections - release fd
-	l.closeError = l.UnixListener.Close()
+	err := l.UnixListener.Close()
+	c := make(chan struct{})
 
-	l.wg.Wait()
+	go func() {
+		l.wg.Wait()
+		close(c)
+	}()
 
-	l.shutdownComplete <- struct{}{}
+	select {
+	case <-c:
+	// closed gracefully
+	case <-time.After(l.forceTimeoutDuration):
+		l.SetDeadline(time.Now())
+		log.Println("timeout reached, force shutdown")
+		// not waiting any longer, letting this go.
+		// spoon will think it's been closed and when
+		// the process dies, connections will get cut
+	}
 
-	return l.closeError
+	return err
 }
 
-func (l *zeroUnixListenerListener) File() *os.File {
+func (l *unixListener) File() *os.File {
 
 	// returns a dup(2) - FD_CLOEXEC flag *not* set
 	tl := l.UnixListener
@@ -68,7 +80,7 @@ func (l *zeroUnixListenerListener) File() *os.File {
 //notifying on close net.Conn
 type zeroUinxConn struct {
 	net.Conn
-	wg *sync.WaitGroup
+	wg sync.WaitGroup
 }
 
 func (conn zeroUinxConn) Close() (err error) {

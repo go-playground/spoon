@@ -2,18 +2,23 @@ package spoon
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/kardianos/osext"
 )
 
 const (
 	envListenerFDS = "GO_LISTENER_FDS"
+	envActive      = "GO_ACTIVE_PROCESSES"
 )
 
 // Spoon contains one or more connection information
@@ -25,6 +30,8 @@ type Spoon struct {
 	listeners           []net.Listener
 	activeProcesses     *int32
 	child               *exec.Cmd
+	errorChan           chan error
+	restartChan         chan struct{}
 }
 
 // New creates a new spoon instance.
@@ -41,23 +48,16 @@ func New() *Spoon {
 		binaryPath:          executable,
 		fileDescriptorIndex: 3, // they start at 3
 		activeProcesses:     &active,
+		errorChan:           make(chan error),
+		restartChan:         make(chan struct{}),
 	}
 }
 
-// ListenerSetupComplete when in the master process, starts the first child
-// otherwise if in the child process is just ignored.
-func (s *Spoon) ListenerSetupComplete() error {
-
-	// not need to do anything
-	if s.isSlaveProcess() {
-		return nil
-	}
-
-	// in master process, start new child process
-	// blocks until getting a termination signal.
+func (s *Spoon) startChild() error {
 
 	fds := envListenerFDS + "=" + strconv.Itoa(len(s.fileDescriptors))
-	e := append(os.Environ(), fds)
+	ap := envActive + "=" + strconv.Itoa(int(atomic.LoadInt32(s.activeProcesses)))
+	e := append(os.Environ(), fds, ap)
 
 	// start server
 	oldCmd := s.child
@@ -79,7 +79,7 @@ func (s *Spoon) ListenerSetupComplete() error {
 		// wait for child to signal it is up and running
 		<-signals // child notifies master process that it's up and running
 
-		s.logFunc("SIGUSR1 Recieved from child")
+		log.Println("SIGUSR1 Recieved from child")
 
 		signal.Stop(signals)
 
@@ -96,20 +96,65 @@ func (s *Spoon) ListenerSetupComplete() error {
 		}()
 
 		go func() {
-			select {
-			case err := <-cmdwait:
-				if err != nil {
-					s.errFunc(&ChildShutdownError{innerError: err})
-				}
 
-				s.logFunc("Child Shutdown Complete")
+			err := <-cmdwait
+
+			if err != nil {
+				s.sendError(&ChildShutdownError{innerError: err})
 			}
+
+			log.Println("Child Shutdown Complete")
 		}()
 	}()
 
 	if err := s.child.Start(); err != nil {
 		return &ChildStartError{innerError: err}
 	}
+
+	atomic.AddInt32(s.activeProcesses, 1)
+
+	return nil
+}
+
+// ListenerSetupComplete when in the master process, starts the first child
+// otherwise if in the child process is just ignored.
+func (s *Spoon) ListenerSetupComplete() error {
+
+	// not need to do anything
+	if s.isSlaveProcess() {
+		return nil
+	}
+
+	// in master process, start new child process
+	// blocks until getting a termination signal.
+	if err := s.startChild(); err != nil {
+		return err
+	}
+
+	err := s.startChild()
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		for {
+			<-s.restartChan
+
+			log.Println("Graceful restart triggered")
+
+			// graceful restart triggered
+			err := s.startChild()
+			if err != nil {
+				s.sendError(&ChildStartError{innerError: fmt.Errorf("ERROR starting new slave gracefully %s", err)})
+			}
+		}
+	}()
+
+	// wait for close signals here
+	signals := make(chan os.Signal)
+	signal.Notify(signals, syscall.SIGTERM)
+
+	<-signals
 
 	return nil
 }
@@ -123,6 +168,93 @@ func (s *Spoon) Run() {
 	// but just in case
 	if !s.isSlaveProcess() {
 		panic("ERROR: Run should never be called from master process, please check that ListenerSetupComplete() was called.")
+	}
+
+	done := make(chan bool)
+	signals := make(chan os.Signal)
+	signal.Notify(signals, syscall.SIGTERM)
+
+	go func() {
+		<-signals
+
+		log.Println("TERMINATION SIGNAL RECEIVED, Closing Slave Listener(s)")
+
+		closed := make(chan int)
+		var mt sync.Mutex
+		var i int
+
+		for _, l := range s.listeners {
+			go func(l net.Listener) {
+				err := l.Close()
+
+				mt.Lock()
+				i++
+
+				log.Printf("Gracefully shutdown server %d of %d\n", i, len(s.listeners))
+				if err != nil {
+					log.Println("There was an error shutting down the listener:", err, " continuing shutdown")
+				}
+
+				if i == len(s.listeners) {
+					closed <- 0
+				}
+
+				mt.Unlock()
+			}(l)
+		}
+
+		os.Exit(<-closed)
+	}()
+
+	// let's just wait a few seconds to ensure all listeners have completed startup
+	// I don't know of a way to tell if they are already running or not 100%, the stdlib
+	// has no way to hook into it that I know of.
+	//
+	// if 0 then it's first slave to be started, don't wait!
+	if s.getExtraParams(envActive) != "0" {
+		time.Sleep(time.Second * 3)
+	}
+
+	go s.signalParent()
+
+	<-done
+}
+
+// Errors returns an error channel that can optionally be listened to
+// if you need to know if an error, or a specific error, has occurred.
+// eg. I send the dev team an email when something went wrong ( which should be never )
+// but just in case.
+func (s *Spoon) Errors() <-chan error {
+
+	if s.errorChan == nil {
+		s.errorChan = make(chan error)
+	}
+
+	return s.errorChan
+}
+
+func (s *Spoon) sendError(err error) {
+
+	if s.errorChan == nil {
+		log.Println(err)
+	} else {
+		s.errorChan <- err
+	}
+}
+
+func (s *Spoon) signalParent() {
+
+	time.Sleep(time.Second)
+	pid := os.Getppid()
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		s.sendError(&SignalParentError{fmt.Errorf("ERROR FINDING MASTER PROCESS: %s", err)})
+	}
+
+	err = proc.Signal(syscall.SIGUSR1)
+	if err != nil {
+		s.sendError(&SignalParentError{fmt.Errorf("ERROR SIGNALING MASTER PROC: %s", err)})
 	}
 }
 

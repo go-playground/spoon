@@ -37,3 +37,15 @@ func (s *ChildShutdownError) Error() string {
 }
 
 var _ error = new(ChildShutdownError)
+
+// SignalParentError contains an error regarding signaling the parent
+type SignalParentError struct {
+	innerError error
+}
+
+// Error returns the slave start error
+func (s *SignalParentError) Error() string {
+	return fmt.Sprint("Error Signaling parent:" + s.innerError.Error())
+}
+
+var _ error = new(SignalParentError)
