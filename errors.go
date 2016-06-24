@@ -2,30 +2,6 @@ package spoon
 
 import "fmt"
 
-// SlaveStartError contains the slave start error
-type SlaveStartError struct {
-	innerError error
-}
-
-// Error returns the slave start error
-func (s *SlaveStartError) Error() string {
-	return fmt.Sprint("Slave Process Failed to Start:" + s.innerError.Error())
-}
-
-var _ error = new(SlaveStartError)
-
-// SlaveShutdownError contains the slave shutdown error
-type SlaveShutdownError struct {
-	innerError error
-}
-
-// Error returns the slave start error
-func (s *SlaveShutdownError) Error() string {
-	return fmt.Sprint("Slave Shutdown Error:" + s.innerError.Error() + "\n\nNOTE: could just be the force termination because timeout reached")
-}
-
-var _ error = new(SlaveShutdownError)
-
 // FileDescriptorError contains a file descriptor error
 type FileDescriptorError struct {
 	innerError error
@@ -38,26 +14,26 @@ func (f *FileDescriptorError) Error() string {
 
 var _ error = new(FileDescriptorError)
 
-// SignalParentError contains an error regarding signaling the parent
-type SignalParentError struct {
+// ChildStartError contains the slave start error
+type ChildStartError struct {
 	innerError error
 }
 
 // Error returns the slave start error
-func (s *SignalParentError) Error() string {
-	return fmt.Sprint("Error Signaling parent:" + s.innerError.Error())
+func (s *ChildStartError) Error() string {
+	return fmt.Sprint("Child Process Failed to Start:" + s.innerError.Error())
 }
 
-var _ error = new(SignalParentError)
+var _ error = new(ChildStartError)
 
-// BinaryUpdateError contains a binary update error
-type BinaryUpdateError struct {
+// ChildShutdownError contains the slave shutdown error
+type ChildShutdownError struct {
 	innerError error
 }
 
 // Error returns the slave start error
-func (b *BinaryUpdateError) Error() string {
-	return fmt.Sprint("Binary Update Error:" + b.innerError.Error())
+func (s *ChildShutdownError) Error() string {
+	return fmt.Sprint("Slave Shutdown Error:" + s.innerError.Error() + "\n\nNOTE: could just be the force termination because timeout reached")
 }
 
-var _ error = new(BinaryUpdateError)
+var _ error = new(ChildShutdownError)

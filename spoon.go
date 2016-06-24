@@ -1,61 +1,33 @@
 package spoon
 
 import (
-	"log"
-	"net/http"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
-	"sync"
-	"time"
+	"os/signal"
+	"strconv"
+	"syscall"
 
 	"github.com/kardianos/osext"
 )
 
-// LogFunc is the function that all log messages get sent to,
-// it is overridable using the RegisterLogFunc on the spoon instance.
-type LogFunc func(msg string)
-
-// ErrorFunc is the function that all error messages get sent to,
-// is is overridable using the RegisterErrorFunc
-type ErrorFunc func(err error)
-
-// UpdateStrategy specifies the Update Strategy
-// NOTE: All strategies use Checksum + CryptoGraphic signature
-type UpdateStrategy uint
-
-// UpdatePerformed is the channel type used to signify an update has been completed
-type UpdatePerformed chan struct{}
-
-// Update Strategies
 const (
-	FullBinary UpdateStrategy = iota
-	// Patch
+	envListenerFDS = "GO_LISTENER_FDS"
 )
 
-// Spoon is the instance object
+// Spoon contains one or more connection information
+// for graceful restarts
 type Spoon struct {
-	updateStrategy           UpdateStrategy
-	updateInterval           time.Duration
-	originalChecksum         string
-	lastUpdateChecksum       string
-	updateRequest            *http.Request
-	updateCompleted          UpdatePerformed
-	isAutoUpdating           bool
-	binaryPath               string
-	fileDescriptors          []*os.File
-	slave                    *exec.Cmd
-	forceTerminateTimeout    time.Duration // default is 5 minutes
-	keepaliveDuration        time.Duration
-	gracefulShutdownComplete chan struct{}
-	gracefulRestartChannel   chan struct{}
-	logFunc                  LogFunc
-	errFunc                  ErrorFunc
-	servers                  []*Server
-	fdIndex                  int
-	m                        *sync.Mutex
+	binaryPath          string
+	fileDescriptors     []*os.File
+	fileDescriptorIndex int
+	listeners           []net.Listener
+	activeProcesses     *int32
+	child               *exec.Cmd
 }
 
-// New creates a new spoon instance
+// New creates a new spoon instance.
 func New() *Spoon {
 
 	executable, err := osext.Executable()
@@ -63,59 +35,149 @@ func New() *Spoon {
 		panic(err)
 	}
 
+	var active int32
+
 	return &Spoon{
-		binaryPath:            executable,
-		forceTerminateTimeout: time.Minute * 5,
-		keepaliveDuration:     time.Minute * 3,
-		servers:               make([]*Server, 0),
-		fdIndex:               3,
-		m:                     new(sync.Mutex),
-		logFunc: func(msg string) {
-			log.Println(msg)
-		},
-		errFunc: func(err error) {
-			log.Println(err)
-		},
+		binaryPath:          executable,
+		fileDescriptorIndex: 3, // they start at 3
+		activeProcesses:     &active,
 	}
 }
 
-// RegisterErrorFunc registers a custom error function which all errors
-// will be sent to and the calling program can handle any way they wish
-func (s *Spoon) RegisterErrorFunc(fn ErrorFunc) {
-	s.errFunc = fn
+// ListenerSetupComplete when in the master process, starts the first child
+// otherwise if in the child process is just ignored.
+func (s *Spoon) ListenerSetupComplete() error {
+
+	// not need to do anything
+	if s.isSlaveProcess() {
+		return nil
+	}
+
+	// in master process, start new child process
+	// blocks until getting a termination signal.
+
+	fds := envListenerFDS + "=" + strconv.Itoa(len(s.fileDescriptors))
+	e := append(os.Environ(), fds)
+
+	// start server
+	oldCmd := s.child
+
+	s.child = exec.Command(s.binaryPath)
+	s.child.Env = e
+	s.child.Args = os.Args
+	s.child.Stdin = os.Stdin
+	s.child.Stdout = os.Stdout
+	s.child.Stderr = os.Stderr
+	s.child.ExtraFiles = s.fileDescriptors
+
+	// wait for close signals here
+	signals := make(chan os.Signal)
+	signal.Notify(signals, syscall.SIGTERM)
+
+	go func() {
+
+		// wait for child to signal it is up and running
+		<-signals // child notifies master process that it's up and running
+
+		s.logFunc("SIGUSR1 Recieved from child")
+
+		signal.Stop(signals)
+
+		// will have to use current s.child, if set, to trigger shutdown of old child
+		if oldCmd != nil {
+			// shut down server! .. gracefully
+			oldCmd.Process.Signal(syscall.SIGTERM)
+		}
+
+		cmdwait := make(chan error)
+		go func() {
+			// wait for child process to finish, one way or another
+			cmdwait <- s.child.Wait()
+		}()
+
+		go func() {
+			select {
+			case err := <-cmdwait:
+				if err != nil {
+					s.errFunc(&ChildShutdownError{innerError: err})
+				}
+
+				s.logFunc("Child Shutdown Complete")
+			}
+		}()
+	}()
+
+	if err := s.child.Start(); err != nil {
+		return &ChildStartError{innerError: err}
+	}
+
+	return nil
 }
 
-// RegisterLogFunc registers a custom log function which all logs
-// will be sent to and the calling program can handle any way they wish
-func (s *Spoon) RegisterLogFunc(fn LogFunc) {
-	s.logFunc = fn
+// Run when in the child process, notifies the master process that it has completed startup.
+// and will block until program is shutdown.
+func (s *Spoon) Run() {
+
+	// should never reach this code from master process as
+	// ListenerSetupComplete() should block.
+	// but just in case
+	if !s.isSlaveProcess() {
+		panic("ERROR: Run should never be called from master process, please check that ListenerSetupComplete() was called.")
+	}
 }
 
-// SetForceTerminationTimeout sets the duartion to wait before force
-// terminating remaining connections
-// DEFAULT: 5 minutes
-func (s *Spoon) SetForceTerminationTimeout(d time.Duration) {
-	s.forceTerminateTimeout = d
+// ListenTCP announces on the local network address laddr. The network net must
+// be: "tcp", "tcp4" or "tcp6". It returns an inherited net.Listener for the
+// matching network and address, or creates a new one using net.ListenTCP.
+func (s *Spoon) ListenTCP(nett string, addr string) (Listener, error) {
+
+	if !s.isSlaveProcess() {
+
+		// setup file descriptors
+
+		a, err := net.ResolveTCPAddr("tcp", addr)
+		if err != nil {
+			return nil, &FileDescriptorError{innerError: fmt.Errorf("Invalid address %s (%s)", addr, err)}
+		}
+
+		l, err := net.ListenTCP("tcp", a)
+		if err != nil {
+			return nil, &FileDescriptorError{innerError: err}
+		}
+
+		f, err := l.File()
+		if err != nil {
+			return nil, &FileDescriptorError{innerError: fmt.Errorf("Failed to retreive fd for: %s (%s)", addr, err)}
+		}
+
+		if err := l.Close(); err != nil {
+			return nil, &FileDescriptorError{innerError: fmt.Errorf("Failed to close listener for: %s (%s)", addr, err)}
+		}
+
+		s.fileDescriptors = append(s.fileDescriptors, f)
+
+		return nil, nil
+	}
+
+	f := os.NewFile(uintptr(s.fileDescriptorIndex), "")
+	s.fileDescriptorIndex++
+
+	l, err := net.FileListener(f)
+	if err != nil {
+		fmt.Println(err)
+		return nil, &FileDescriptorError{innerError: fmt.Errorf("failed to inherit file descriptor: %d error: %s", s.fileDescriptorIndex, err)}
+	}
+
+	ltcp := newtcpListener(l.(*net.TCPListener))
+	s.listeners = append(s.listeners, ltcp)
+
+	return ltcp, nil
 }
 
-// SetKeepAliveDuration sets the connections Keep Alive Period
-// DEFAULT: 3 minutes
-func (s *Spoon) SetKeepAliveDuration(d time.Duration) {
-	s.keepaliveDuration = d
+func (s *Spoon) isSlaveProcess() bool {
+	return s.getExtraParams(envListenerFDS) != ""
 }
 
-// SetGracefulRestartChannel sets the channel that will trigger
-// a gracefull restart. Exists this way so that you can restart whenever you want,
-// not just when an upgrade is performed. i.e. maybe you want to rollout your
-// update to all servers but not restart until the start of the hour, ensuring
-// all your frontends are already updated and waiting.
-func (s *Spoon) SetGracefulRestartChannel(ch chan struct{}) {
-	s.gracefulRestartChannel = ch
-}
-
-// HasBeenUpdated returns if the running binary has been updated since it's been started.
-// good for applications that may need manual intervention to restart, this will allow
-// the application to know it needs restarting and notify user ( think how google chrome does it )
-func (s *Spoon) HasBeenUpdated() bool {
-	return s.originalChecksum != s.lastUpdateChecksum
+func (s *Spoon) getExtraParams(key string) string {
+	return os.Getenv(key)
 }
