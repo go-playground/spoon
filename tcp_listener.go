@@ -13,6 +13,7 @@ func newtcpListener(l *net.TCPListener) *tcpListener {
 		TCPListener:          l,
 		keepaliveDuration:    3 * time.Minute,
 		forceTimeoutDuration: 5 * time.Minute,
+		wg:                   new(sync.WaitGroup),
 	}
 }
 
@@ -20,7 +21,7 @@ type tcpListener struct {
 	*net.TCPListener
 	keepaliveDuration    time.Duration
 	forceTimeoutDuration time.Duration
-	wg                   sync.WaitGroup
+	wg                   *sync.WaitGroup
 }
 
 var _ net.Listener = new(tcpListener)
@@ -86,7 +87,7 @@ func (l *tcpListener) File() *os.File {
 //notifying on close net.Conn
 type zeroTCPConn struct {
 	net.Conn
-	wg sync.WaitGroup
+	wg *sync.WaitGroup
 }
 
 func (conn zeroTCPConn) Close() (err error) {

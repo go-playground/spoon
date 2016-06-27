@@ -1,6 +1,7 @@
 package spoon
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -59,9 +60,9 @@ func (s *Spoon) startChild() error {
 	ap := envActive + "=" + strconv.Itoa(int(atomic.LoadInt32(s.activeProcesses)))
 	e := append(os.Environ(), fds, ap)
 
-	// start server
 	oldCmd := s.child
 
+	// start server
 	s.child = exec.Command(s.binaryPath)
 	s.child.Env = e
 	s.child.Args = os.Args
@@ -72,7 +73,7 @@ func (s *Spoon) startChild() error {
 
 	// wait for close signals here
 	signals := make(chan os.Signal)
-	signal.Notify(signals, syscall.SIGTERM)
+	signal.Notify(signals, syscall.SIGUSR1)
 
 	go func() {
 
@@ -83,27 +84,47 @@ func (s *Spoon) startChild() error {
 
 		signal.Stop(signals)
 
+		// keep track of active processes to ensure at least one is running
+		atomic.AddInt32(s.activeProcesses, 1)
+
 		// will have to use current s.child, if set, to trigger shutdown of old child
 		if oldCmd != nil {
-			// shut down server! .. gracefully
+			// shut down old server! .. gracefully
 			oldCmd.Process.Signal(syscall.SIGTERM)
 		}
 
-		cmdwait := make(chan error)
-		go func() {
-			// wait for child process to finish, one way or another
-			cmdwait <- s.child.Wait()
-		}()
-
 		go func() {
 
-			err := <-cmdwait
-
+			err := s.child.Wait()
 			if err != nil {
 				s.sendError(&ChildShutdownError{innerError: err})
 			}
 
 			log.Println("Child Shutdown Complete")
+
+			atomic.AddInt32(s.activeProcesses, -1)
+
+			// ensure that at least one instance is running
+			// this is just in case the child process crashes
+			// due to an unexpected error and the maaster process
+			// is still running, but without any children!
+			//
+			// a little outside the scope of this library but better to be up
+			// than not!
+
+			if atomic.LoadInt32(s.activeProcesses) == 0 {
+
+				// no children running!... start one back up!
+				// and notify of error.
+
+				s.sendError(&ChildCrashError{innerError: errors.New("Unexpected Child End of Process, attempting restart")})
+
+				err := s.startChild()
+				if err != nil {
+					s.sendError(&ChildStartError{innerError: err})
+				}
+
+			}
 		}()
 	}()
 
@@ -111,9 +132,21 @@ func (s *Spoon) startChild() error {
 		return &ChildStartError{innerError: err}
 	}
 
-	atomic.AddInt32(s.activeProcesses, 1)
-
 	return nil
+}
+
+// Restart triggers a service zero downtime restart
+func (s *Spoon) Restart() {
+
+	// if in slave signal master process
+	// with syscall.SIGUSR2 which will cause
+	// restart
+	if s.isSlaveProcess() {
+		go s.signalParent(syscall.SIGUSR2)
+		return
+	}
+
+	s.restartChan <- struct{}{}
 }
 
 // ListenerSetupComplete when in the master process, starts the first child
@@ -127,12 +160,23 @@ func (s *Spoon) ListenerSetupComplete() error {
 
 	// in master process, start new child process
 	// blocks until getting a termination signal.
-	if err := s.startChild(); err != nil {
-		return err
-	}
 
-	err := s.startChild()
-	if err != nil {
+	// starting goroutine to monitor restart signals from children
+	go func() {
+
+		signals := make(chan os.Signal)
+		signal.Notify(signals, syscall.SIGUSR2)
+
+		for {
+			<-signals
+
+			log.Println("Recieved Restart signal from Child")
+
+			s.Restart()
+		}
+	}()
+
+	if err := s.startChild(); err != nil {
 		return err
 	}
 
@@ -215,7 +259,7 @@ func (s *Spoon) Run() {
 		time.Sleep(time.Second * 3)
 	}
 
-	go s.signalParent()
+	go s.signalParent(syscall.SIGUSR1)
 
 	<-done
 }
@@ -242,7 +286,7 @@ func (s *Spoon) sendError(err error) {
 	}
 }
 
-func (s *Spoon) signalParent() {
+func (s *Spoon) signalParent(sig os.Signal) {
 
 	time.Sleep(time.Second)
 	pid := os.Getppid()
@@ -252,7 +296,7 @@ func (s *Spoon) signalParent() {
 		s.sendError(&SignalParentError{fmt.Errorf("ERROR FINDING MASTER PROCESS: %s", err)})
 	}
 
-	err = proc.Signal(syscall.SIGUSR1)
+	err = proc.Signal(sig)
 	if err != nil {
 		s.sendError(&SignalParentError{fmt.Errorf("ERROR SIGNALING MASTER PROC: %s", err)})
 	}
@@ -261,7 +305,7 @@ func (s *Spoon) signalParent() {
 // ListenTCP announces on the local network address laddr. The network net must
 // be: "tcp", "tcp4" or "tcp6". It returns an inherited net.Listener for the
 // matching network and address, or creates a new one using net.ListenTCP.
-func (s *Spoon) ListenTCP(nett string, addr string) (Listener, error) {
+func (s *Spoon) ListenTCP(addr string) (Listener, error) {
 
 	if !s.isSlaveProcess() {
 

@@ -7,33 +7,33 @@ type FileDescriptorError struct {
 	innerError error
 }
 
-// Error returns the slave start error
+// Error returns the child's start error
 func (f *FileDescriptorError) Error() string {
 	return fmt.Sprint("FileDescriptor Error:" + f.innerError.Error())
 }
 
 var _ error = new(FileDescriptorError)
 
-// ChildStartError contains the slave start error
+// ChildStartError contains the child's start error
 type ChildStartError struct {
 	innerError error
 }
 
-// Error returns the slave start error
+// Error returns the child's start error
 func (s *ChildStartError) Error() string {
 	return fmt.Sprint("Child Process Failed to Start:" + s.innerError.Error())
 }
 
 var _ error = new(ChildStartError)
 
-// ChildShutdownError contains the slave shutdown error
+// ChildShutdownError contains the child's shutdown error
 type ChildShutdownError struct {
 	innerError error
 }
 
-// Error returns the slave start error
+// Error returns the child's start error
 func (s *ChildShutdownError) Error() string {
-	return fmt.Sprint("Slave Shutdown Error:" + s.innerError.Error() + "\n\nNOTE: could just be the force termination because timeout reached")
+	return fmt.Sprint("Child Shutdown Error:" + s.innerError.Error() + "\n\nNOTE: could just be the force termination because timeout reached")
 }
 
 var _ error = new(ChildShutdownError)
@@ -43,9 +43,21 @@ type SignalParentError struct {
 	innerError error
 }
 
-// Error returns the slave start error
+// Error returns the child's start error
 func (s *SignalParentError) Error() string {
 	return fmt.Sprint("Error Signaling parent:" + s.innerError.Error())
 }
 
 var _ error = new(SignalParentError)
+
+// ChildCrashError contains the child's shutdown error
+type ChildCrashError struct {
+	innerError error
+}
+
+// Error returns the child's start error
+func (s *ChildCrashError) Error() string {
+	return fmt.Sprint("Child Crashed:" + s.innerError.Error())
+}
+
+var _ error = new(ChildCrashError)
