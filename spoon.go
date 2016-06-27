@@ -151,6 +151,8 @@ func (s *Spoon) startChild() error {
 }
 
 // Restart triggers a service zero downtime restart
+// NOTE: it is up to you to ensure Upgrade and Restart don't occur
+// at the same time, otherwise I would be limiting how you could use it
 func (s *Spoon) Restart() {
 
 	// if in slave signal master process
@@ -374,6 +376,8 @@ func (s *Spoon) getExtraParams(key string) string {
 }
 
 // Upgrade updates the binary, given the provided Update Strategy
+// NOTE: it is up to you to ensure Upgrade and Restart don't occur
+// at the same time, otherwise I would be limiting how you could use it
 func (s *Spoon) Upgrade(r io.Reader, strategy UpdateStrategy) error {
 
 	if s.binaryChecksum == "" {
