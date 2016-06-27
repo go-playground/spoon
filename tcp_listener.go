@@ -1,12 +1,22 @@
 package spoon
 
 import (
+	"crypto/tls"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
 )
+
+// TCPListener is spoon's Listener interface with extra helper methods.
+type TCPListener interface {
+	net.Listener
+	ListenAndServe(addr string, handler http.Handler) error
+	ListenAndServeTLS(addr string, certFile string, keyFile string, handler http.Handler) error
+	RunServer(server *http.Server) error
+}
 
 func newtcpListener(l *net.TCPListener) *tcpListener {
 	return &tcpListener{
@@ -25,7 +35,7 @@ type tcpListener struct {
 }
 
 var _ net.Listener = new(tcpListener)
-var _ Listener = new(tcpListener)
+var _ TCPListener = new(tcpListener)
 
 func (l *tcpListener) Accept() (net.Conn, error) {
 
@@ -99,4 +109,78 @@ func (conn zeroTCPConn) Close() (err error) {
 
 	conn.wg.Done()
 	return
+}
+
+//
+// HTTP Section for tcpListener
+//
+
+// ListenAndServe mimics the std libraries http.ListenAndServe but uses our custom listener
+// for graceful restarts.
+func (l *tcpListener) ListenAndServe(addr string, handler http.Handler) error {
+
+	server := &http.Server{Addr: l.Addr().String(), Handler: handler}
+
+	go server.Serve(l)
+
+	return nil
+}
+
+// ListenAndServeTLS mimics the std libraries http.ListenAndServeTLS but uses out custom listener
+// for graceful restarts.
+func (l *tcpListener) ListenAndServeTLS(addr string, certFile string, keyFile string, handler http.Handler) error {
+
+	var err error
+
+	tlsConfig := &tls.Config{
+		NextProtos:   []string{"http/1.1"},
+		Certificates: make([]tls.Certificate, 1),
+	}
+
+	tlsConfig.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+
+	tlsListener := tls.NewListener(l, tlsConfig)
+
+	server := &http.Server{Addr: tlsListener.Addr().String(), Handler: handler, TLSConfig: tlsConfig}
+
+	go server.Serve(tlsListener)
+
+	return nil
+}
+
+// RunServer runs the provided http.Server, if using TLS, TLSConfig must be setup prior to
+// calling this function
+func (l *tcpListener) RunServer(server *http.Server) error {
+
+	var lis net.Listener
+
+	if server.TLSConfig != nil {
+		if server.TLSConfig.NextProtos == nil {
+			server.TLSConfig.NextProtos = make([]string, 0)
+		}
+
+		if len(server.TLSConfig.NextProtos) == 0 || !strSliceContains(server.TLSConfig.NextProtos, "http/1.1") {
+			server.TLSConfig.NextProtos = append(server.TLSConfig.NextProtos, "http/1.1")
+		}
+
+		lis = tls.NewListener(l, server.TLSConfig)
+	} else {
+		lis = l
+	}
+
+	go server.Serve(lis)
+
+	return nil
+}
+
+func strSliceContains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

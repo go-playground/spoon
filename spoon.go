@@ -1,8 +1,11 @@
 package spoon
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/inconshreveable/go-update"
 	"github.com/kardianos/osext"
 )
 
@@ -33,7 +37,18 @@ type Spoon struct {
 	child               *exec.Cmd
 	errorChan           chan error
 	restartChan         chan struct{}
+	binaryChecksum      string
 }
+
+// UpdateStrategy specifies the Update Strategy
+type UpdateStrategy uint
+
+// Update Strategies, currently only FullBinary, but hoping to add more
+// in the future.
+const (
+	FullBinary UpdateStrategy = iota
+	// Patch
+)
 
 // New creates a new spoon instance.
 func New() *Spoon {
@@ -305,7 +320,7 @@ func (s *Spoon) signalParent(sig os.Signal) {
 // ListenTCP announces on the local network address laddr. The network net must
 // be: "tcp", "tcp4" or "tcp6". It returns an inherited net.Listener for the
 // matching network and address, or creates a new one using net.ListenTCP.
-func (s *Spoon) ListenTCP(addr string) (Listener, error) {
+func (s *Spoon) ListenTCP(addr string) (TCPListener, error) {
 
 	if !s.isSlaveProcess() {
 
@@ -356,4 +371,52 @@ func (s *Spoon) isSlaveProcess() bool {
 
 func (s *Spoon) getExtraParams(key string) string {
 	return os.Getenv(key)
+}
+
+// Upgrade updates the binary, given the provided Update Strategy
+func (s *Spoon) Upgrade(r io.Reader, strategy UpdateStrategy) error {
+
+	if s.binaryChecksum == "" {
+		// set original binary checksum
+		f, err := os.Open(s.binaryPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		hash := sha256.New()
+		tee := io.TeeReader(f, hash)
+		io.Copy(ioutil.Discard, tee)
+
+		s.binaryChecksum = fmt.Sprintf("%x", string(hash.Sum(nil)))
+	}
+
+	switch strategy {
+	case FullBinary:
+
+		hash := sha256.New()
+		tee := io.TeeReader(r, hash)
+
+		if err := update.Apply(tee, update.Options{TargetPath: s.binaryPath}); err != nil {
+
+			if rerr := update.RollbackError(err); rerr != nil {
+				return &BinaryUpdateError{innerError: fmt.Errorf("Failed to rollback from bad update: %v\n", rerr)}
+			}
+		}
+
+		checksum := fmt.Sprintf("%x", string(hash.Sum(nil)))
+
+		// double checking the update was applied, in rare...rare cases it is possible
+		// to think it's applied the update without error.
+		if checksum == s.binaryChecksum {
+			return &BinaryUpdateError{innerError: errors.New("Binary Not Updated! Even though no errors occured!")}
+		}
+
+		s.binaryChecksum = checksum
+
+	default:
+		return fmt.Errorf("Unknown Update Strategy '%d'", strategy)
+	}
+
+	return nil
 }

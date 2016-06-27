@@ -61,3 +61,15 @@ func (s *ChildCrashError) Error() string {
 }
 
 var _ error = new(ChildCrashError)
+
+// BinaryUpdateError contains a binary update error
+type BinaryUpdateError struct {
+	innerError error
+}
+
+// Error returns the slave start error
+func (b *BinaryUpdateError) Error() string {
+	return fmt.Sprint("Binary Update Error:" + b.innerError.Error())
+}
+
+var _ error = new(BinaryUpdateError)
