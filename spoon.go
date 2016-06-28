@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/inconshreveable/go-update"
 	"github.com/kardianos/osext"
 )
 
@@ -30,6 +29,8 @@ const (
 // for graceful restarts
 type Spoon struct {
 	binaryPath          string
+	binaryNewPath       string
+	binaryOldPath       string
 	fileDescriptors     []*os.File
 	fileDescriptorIndex int
 	listeners           []net.Listener
@@ -62,6 +63,8 @@ func New() *Spoon {
 
 	return &Spoon{
 		binaryPath:          executable,
+		binaryNewPath:       executable + ".new",
+		binaryOldPath:       executable + ".old",
 		fileDescriptorIndex: 3, // they start at 3
 		activeProcesses:     &active,
 		errorChan:           make(chan error),
@@ -401,12 +404,47 @@ func (s *Spoon) Upgrade(r io.Reader, strategy UpdateStrategy) error {
 		hash := sha256.New()
 		tee := io.TeeReader(r, hash)
 
-		if err := update.Apply(tee, update.Options{TargetPath: s.binaryPath}); err != nil {
-
-			if rerr := update.RollbackError(err); rerr != nil {
-				return &BinaryUpdateError{innerError: fmt.Errorf("Failed to rollback from bad update: %v\n", rerr)}
-			}
+		newFile, err := os.OpenFile(s.binaryNewPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(0755))
+		if err != nil {
+			return &BinaryUpdateError{innerError: fmt.Errorf("Failed to open new binary for writing: %v\n", err)}
 		}
+		defer newFile.Close()
+
+		_, err = io.Copy(newFile, tee)
+		if err != nil {
+			return &BinaryUpdateError{innerError: fmt.Errorf("Failed writing to updated binary: %v\n", err)}
+		}
+
+		// must close the file handle otherwise some systems like windows
+		// will see it as in-use(locked) and not allow us to move it to the
+		// existing binary path
+		newFile.Close()
+
+		// ensure any old files get cleaned up that were left hanging around
+		os.Remove(s.binaryOldPath)
+
+		// move existing binary to .old
+		err = os.Rename(s.binaryPath, s.binaryOldPath)
+		if err != nil {
+			return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving existing binary: %v\n", err)}
+		}
+
+		// move new binary into existing binary's old position
+		err = os.Rename(s.binaryNewPath, s.binaryPath)
+		if err != nil {
+			// was an error moving new file into position
+			// let's attempt to put back old binary
+			errr := os.Rename(s.binaryOldPath, s.binaryPath)
+			if errr != nil {
+				return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving new binary into place & Failed to move old binary back. App is now in a bad state: %v\n", err)}
+			}
+
+			return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving new binary into place: %v\n", err)}
+		}
+
+		// this may fail on windows because old process has yet to shutdown, but that's
+		// ok... it will get deleted on next upgrade.
+		os.Remove(s.binaryOldPath)
 
 		checksum := fmt.Sprintf("%x", string(hash.Sum(nil)))
 
