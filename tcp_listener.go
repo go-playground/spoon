@@ -13,6 +13,8 @@ import (
 // TCPListener is spoon's Listener interface with extra helper methods.
 type TCPListener interface {
 	net.Listener
+	SetKeepAlive(d time.Duration)
+	SetForceTimeout(d time.Duration)
 	ListenAndServe(addr string, handler http.Handler) error
 	ListenAndServeTLS(addr string, certFile string, keyFile string, handler http.Handler) error
 	RunServer(server *http.Server) error
@@ -24,6 +26,8 @@ func newtcpListener(l *net.TCPListener) *tcpListener {
 		keepaliveDuration:    3 * time.Minute,
 		forceTimeoutDuration: 5 * time.Minute,
 		wg:                   new(sync.WaitGroup),
+		conns:                map[*net.TCPConn]*net.TCPConn{},
+		m:                    new(sync.Mutex),
 	}
 }
 
@@ -32,6 +36,8 @@ type tcpListener struct {
 	keepaliveDuration    time.Duration
 	forceTimeoutDuration time.Duration
 	wg                   *sync.WaitGroup
+	conns                map[*net.TCPConn]*net.TCPConn
+	m                    *sync.Mutex
 }
 
 var _ net.Listener = new(tcpListener)
@@ -48,9 +54,14 @@ func (l *tcpListener) Accept() (net.Conn, error) {
 	conn.SetKeepAlivePeriod(l.keepaliveDuration) // see http.tcpKeepAliveListener
 
 	zconn := zeroTCPConn{
-		Conn: conn,
-		wg:   l.wg,
+		TCPConn: conn,
+		wg:      l.wg,
+		l:       l,
 	}
+
+	l.m.Lock()
+	l.conns[conn] = conn
+	l.m.Unlock()
 
 	l.wg.Add(1)
 
@@ -67,6 +78,17 @@ func (l *tcpListener) Close() error {
 	c := make(chan struct{})
 
 	go func() {
+		l.m.Lock()
+		for _, v := range l.conns {
+			log.Println("Closing Keepalives")
+
+			// ok this needs some explanation
+			v.Close() // this is OK to close, see (*TCPConn) SetLinger, just can't reduce waitgroup until it's actually closed!
+		}
+		l.m.Unlock()
+	}()
+
+	go func() {
 		l.wg.Wait()
 		close(c)
 	}()
@@ -75,7 +97,6 @@ func (l *tcpListener) Close() error {
 	case <-c:
 	// closed gracefully
 	case <-time.After(l.forceTimeoutDuration):
-		l.SetDeadline(time.Now())
 		log.Println("timeout reached, force shutdown")
 		// not waiting any longer, letting this go.
 		// spoon will think it's been closed and when
@@ -96,16 +117,23 @@ func (l *tcpListener) File() *os.File {
 
 //notifying on close net.Conn
 type zeroTCPConn struct {
-	net.Conn
+	// net.Conn
+	*net.TCPConn
 	wg *sync.WaitGroup
+	l  *tcpListener
 }
 
 func (conn zeroTCPConn) Close() (err error) {
 
-	if err = conn.Conn.Close(); err != nil {
-		log.Println("ERROR CLOSING CONNECTION:", err)
-		return
+	log.Println("Calling Close on Connection")
+
+	if err = conn.TCPConn.Close(); err != nil {
+		log.Println("ERROR CLOSING CONNECTION, OK if connection already closed, we must have triggered a restart: ", err)
 	}
+
+	conn.l.m.Lock()
+	delete(conn.l.conns, conn.TCPConn)
+	conn.l.m.Unlock()
 
 	conn.wg.Done()
 	return
@@ -117,17 +145,20 @@ func (conn zeroTCPConn) Close() (err error) {
 
 // ListenAndServe mimics the std libraries http.ListenAndServe but uses our custom listener
 // for graceful restarts.
+// NOTE: addr is ignored, the address of the listener is used, only reason it is a param is for
+// easier conversion from stdlib http.ListenAndServe
 func (l *tcpListener) ListenAndServe(addr string, handler http.Handler) error {
 
 	server := &http.Server{Addr: l.Addr().String(), Handler: handler}
 
 	go server.Serve(l)
-
 	return nil
 }
 
 // ListenAndServeTLS mimics the std libraries http.ListenAndServeTLS but uses out custom listener
 // for graceful restarts.
+// NOTE: addr is ignored, the address of the listener is used, only reason it is a param is for
+// easier conversion from stdlib http.ListenAndServeTLS
 func (l *tcpListener) ListenAndServeTLS(addr string, certFile string, keyFile string, handler http.Handler) error {
 
 	var err error
@@ -174,6 +205,20 @@ func (l *tcpListener) RunServer(server *http.Server) error {
 	go server.Serve(lis)
 
 	return nil
+}
+
+// SetKeepAlive sets the listener's connection keep alive timeout.
+// NOTE: method is NOT thread safe, must set prior to sp.Run()
+// DEFAULT: time.Minute * 3
+func (l *tcpListener) SetKeepAlive(d time.Duration) {
+	l.keepaliveDuration = d
+}
+
+// SetKeepAlive sets the listener's connection keep alive timeout.
+// NOTE: method is NOT thread safe, must set prior to sp.Run()
+// DEFAULT: time.Minute * 5
+func (l *tcpListener) SetForceTimeout(d time.Duration) {
+	l.forceTimeoutDuration = d
 }
 
 func strSliceContains(ss []string, s string) bool {
