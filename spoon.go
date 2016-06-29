@@ -39,17 +39,8 @@ type Spoon struct {
 	errorChan           chan error
 	restartChan         chan struct{}
 	binaryChecksum      string
+	m                   sync.RWMutex
 }
-
-// UpdateStrategy specifies the Update Strategy
-type UpdateStrategy uint
-
-// Update Strategies, currently only FullBinary, but hoping to add more
-// in the future.
-const (
-	FullBinary UpdateStrategy = iota
-	// Patch
-)
 
 // New creates a new spoon instance.
 func New() *Spoon {
@@ -61,7 +52,7 @@ func New() *Spoon {
 
 	var active int32
 
-	return &Spoon{
+	sp := &Spoon{
 		binaryPath:          executable,
 		binaryNewPath:       executable + ".new",
 		binaryOldPath:       executable + ".old",
@@ -70,6 +61,12 @@ func New() *Spoon {
 		errorChan:           make(chan error),
 		restartChan:         make(chan struct{}),
 	}
+
+	if err = sp.ensureChecksum(); err != nil {
+		panic(err)
+	}
+
+	return sp
 }
 
 func (s *Spoon) startChild() error {
@@ -151,6 +148,17 @@ func (s *Spoon) startChild() error {
 	}
 
 	return nil
+}
+
+// Checksum returns the current binary's checksum value
+// for use in update requests etc...
+func (s *Spoon) Checksum() (checksum string) {
+
+	s.m.RLock()
+	checksum = s.binaryChecksum
+	s.m.Unlock()
+
+	return
 }
 
 // Restart triggers a service zero downtime restart
@@ -378,10 +386,9 @@ func (s *Spoon) getExtraParams(key string) string {
 	return os.Getenv(key)
 }
 
-// Upgrade updates the binary, given the provided Update Strategy
-// NOTE: it is up to you to ensure Upgrade and Restart don't occur
-// at the same time, otherwise I would be limiting how you could use it
-func (s *Spoon) Upgrade(r io.Reader, strategy UpdateStrategy) error {
+func (s *Spoon) ensureChecksum() error {
+	s.m.Lock()
+	defer s.m.Unlock()
 
 	if s.binaryChecksum == "" {
 		// set original binary checksum
@@ -398,67 +405,78 @@ func (s *Spoon) Upgrade(r io.Reader, strategy UpdateStrategy) error {
 		s.binaryChecksum = fmt.Sprintf("%x", string(hash.Sum(nil)))
 	}
 
-	switch strategy {
-	case FullBinary:
+	return nil
+}
 
-		hash := sha256.New()
-		tee := io.TeeReader(r, hash)
+// UpgradeFullBinary updates the binary and must provide an sha256
+// checksum so that it can verify the binary read from the io.Reader
+// is complete.
+// NOTE: it is up to you to ensure Upgrade and Restart don't occur
+// at the same time, otherwise I would be limiting how you could use it
+func (s *Spoon) UpgradeFullBinary(r io.Reader, sha256Checksum string) error {
 
-		newFile, err := os.OpenFile(s.binaryNewPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(0755))
-		if err != nil {
-			return &BinaryUpdateError{innerError: fmt.Errorf("Failed to open new binary for writing: %v\n", err)}
-		}
-		defer newFile.Close()
+	hash := sha256.New()
+	tee := io.TeeReader(r, hash)
 
-		_, err = io.Copy(newFile, tee)
-		if err != nil {
-			return &BinaryUpdateError{innerError: fmt.Errorf("Failed writing to updated binary: %v\n", err)}
-		}
-
-		// must close the file handle otherwise some systems like windows
-		// will see it as in-use(locked) and not allow us to move it to the
-		// existing binary path
-		newFile.Close()
-
-		// ensure any old files get cleaned up that were left hanging around
-		os.Remove(s.binaryOldPath)
-
-		// move existing binary to .old
-		err = os.Rename(s.binaryPath, s.binaryOldPath)
-		if err != nil {
-			return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving existing binary: %v\n", err)}
-		}
-
-		// move new binary into existing binary's old position
-		err = os.Rename(s.binaryNewPath, s.binaryPath)
-		if err != nil {
-			// was an error moving new file into position
-			// let's attempt to put back old binary
-			errr := os.Rename(s.binaryOldPath, s.binaryPath)
-			if errr != nil {
-				return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving new binary into place & Failed to move old binary back. App is now in a bad state: %v\n", err)}
-			}
-
-			return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving new binary into place: %v\n", err)}
-		}
-
-		// this may fail on windows because old process has yet to shutdown, but that's
-		// ok... it will get deleted on next upgrade.
-		os.Remove(s.binaryOldPath)
-
-		checksum := fmt.Sprintf("%x", string(hash.Sum(nil)))
-
-		// double checking the update was applied, in rare...rare cases it is possible
-		// to think it's applied the update without error.
-		if checksum == s.binaryChecksum {
-			return &BinaryUpdateError{innerError: errors.New("Binary Not Updated! Even though no errors occured!")}
-		}
-
-		s.binaryChecksum = checksum
-
-	default:
-		return fmt.Errorf("Unknown Update Strategy '%d'", strategy)
+	newFile, err := os.OpenFile(s.binaryNewPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(0755))
+	if err != nil {
+		return &BinaryUpdateError{innerError: fmt.Errorf("Failed to open new binary for writing: %v\n", err)}
 	}
+	defer newFile.Close()
+
+	_, err = io.Copy(newFile, tee)
+	if err != nil {
+		return &BinaryUpdateError{innerError: fmt.Errorf("Failed writing to updated binary: %v\n", err)}
+	}
+
+	// must close the file handle otherwise some systems like windows
+	// will see it as in-use(locked) and not allow us to move it to the
+	// existing binary path
+	newFile.Close()
+
+	checksum := fmt.Sprintf("%x", string(hash.Sum(nil)))
+
+	if checksum != sha256Checksum {
+		os.Remove(s.binaryNewPath)
+		return &BinaryUpdateError{innerError: fmt.Errorf("Checksums do not match: %v\n", err)}
+	}
+
+	// ensure any old files get cleaned up that were left hanging around
+	os.Remove(s.binaryOldPath)
+
+	// move existing binary to .old
+	err = os.Rename(s.binaryPath, s.binaryOldPath)
+	if err != nil {
+		return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving existing binary: %v\n", err)}
+	}
+
+	// move new binary into existing binary's old position
+	err = os.Rename(s.binaryNewPath, s.binaryPath)
+	if err != nil {
+		// was an error moving new file into position
+		// let's attempt to put back old binary
+		errr := os.Rename(s.binaryOldPath, s.binaryPath)
+		if errr != nil {
+			return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving new binary into place & Failed to move old binary back. App is now in a bad state: %v\n", err)}
+		}
+
+		return &BinaryUpdateError{innerError: fmt.Errorf("Failed moving new binary into place: %v\n", err)}
+	}
+
+	// this may fail on windows because old process has yet to shutdown, but that's
+	// ok... it will get deleted on next upgrade.
+	os.Remove(s.binaryOldPath)
+
+	s.m.Lock()
+	defer s.m.Unlock()
+
+	// double checking the update was applied, in rare...rare cases it is possible
+	// to think it's applied the update without error.
+	if checksum == s.binaryChecksum {
+		return &BinaryUpdateError{innerError: errors.New("Binary Not Updated! Even though no errors occured!")}
+	}
+
+	s.binaryChecksum = checksum
 
 	return nil
 }
