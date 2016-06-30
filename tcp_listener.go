@@ -79,11 +79,10 @@ func (l *tcpListener) Close() error {
 	c := make(chan struct{})
 
 	go func() {
+
 		l.m.Lock()
 		for _, v := range l.conns {
-			log.Println("Closing Keepalives")
-
-			// ok this needs some explanation
+			log.Println("Closing Remaining Keepalives")
 			v.Close() // this is OK to close, see (*TCPConn) SetLinger, just can't reduce waitgroup until it's actually closed!
 		}
 		l.m.Unlock()
