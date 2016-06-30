@@ -52,6 +52,7 @@ func (l *tcpListener) Accept() (net.Conn, error) {
 
 	conn.SetKeepAlive(true)                      // see http.tcpKeepAliveListener
 	conn.SetKeepAlivePeriod(l.keepaliveDuration) // see http.tcpKeepAliveListener
+	// conn.SetLinger(0) // is the default already accoring to the docs https://golang.org/pkg/net/#TCPConn.SetLinger
 
 	zconn := zeroTCPConn{
 		TCPConn: conn,
@@ -117,7 +118,6 @@ func (l *tcpListener) File() *os.File {
 
 //notifying on close net.Conn
 type zeroTCPConn struct {
-	// net.Conn
 	*net.TCPConn
 	wg *sync.WaitGroup
 	l  *tcpListener
@@ -152,6 +152,7 @@ func (l *tcpListener) ListenAndServe(addr string, handler http.Handler) error {
 	server := &http.Server{Addr: l.Addr().String(), Handler: handler}
 
 	go server.Serve(l)
+
 	return nil
 }
 
