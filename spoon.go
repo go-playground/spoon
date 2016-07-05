@@ -155,7 +155,7 @@ func (s *Spoon) Checksum() (checksum string) {
 
 	s.m.RLock()
 	checksum = s.binaryChecksum
-	s.m.Unlock()
+	s.m.RUnlock()
 
 	return
 }
