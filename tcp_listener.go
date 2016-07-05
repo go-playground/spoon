@@ -72,17 +72,16 @@ func (l *tcpListener) Accept() (net.Conn, error) {
 // blocking wait for close
 func (l *tcpListener) Close() error {
 
-	log.Println("Closing Listener:", l.Addr())
-
 	//stop accepting connections - release fd
 	err := l.TCPListener.Close()
 	c := make(chan struct{})
 
 	go func() {
 
+		log.Println("Closing Remaining Keepalives")
+
 		l.m.Lock()
 		for _, v := range l.conns {
-			log.Println("Closing Remaining Keepalives")
 			v.Close() // this is OK to close, see (*TCPConn) SetLinger, just can't reduce waitgroup until it's actually closed!
 		}
 		l.m.Unlock()

@@ -256,14 +256,18 @@ func (s *Spoon) Run() {
 
 		for _, l := range s.listeners {
 			go func(l net.Listener) {
+
+				log.Println("Closing Listener:", l.Addr())
+
 				err := l.Close()
 
 				mt.Lock()
 				i++
 
-				log.Printf("Gracefully shutdown server %d of %d\n", i, len(s.listeners))
 				if err != nil {
 					log.Println("There was an error shutting down the listener:", err, " continuing shutdown")
+				} else {
+					log.Printf("Gracefully shutdown server %d of %d\n", i, len(s.listeners))
 				}
 
 				if i == len(s.listeners) {
