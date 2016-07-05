@@ -124,8 +124,6 @@ type zeroTCPConn struct {
 
 func (conn zeroTCPConn) Close() (err error) {
 
-	log.Println("Calling Close on Connection")
-
 	if err = conn.TCPConn.Close(); err != nil {
 		log.Println("ERROR CLOSING CONNECTION, OK if connection already closed, we must have triggered a restart: ", err)
 	}
