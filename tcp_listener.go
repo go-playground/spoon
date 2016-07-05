@@ -77,9 +77,6 @@ func (l *tcpListener) Close() error {
 	c := make(chan struct{})
 
 	go func() {
-
-		log.Println("Closing Remaining Keepalives")
-
 		l.m.Lock()
 		for _, v := range l.conns {
 			v.Close() // this is OK to close, see (*TCPConn) SetLinger, just can't reduce waitgroup until it's actually closed!
