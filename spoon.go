@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -399,8 +398,7 @@ func (s *Spoon) ensureChecksum() error {
 		defer f.Close()
 
 		hash := sha256.New()
-		tee := io.TeeReader(f, hash)
-		io.Copy(ioutil.Discard, tee)
+		io.Copy(hash, f)
 
 		s.binaryChecksum = fmt.Sprintf("%x", string(hash.Sum(nil)))
 	}
