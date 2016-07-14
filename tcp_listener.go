@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+const (
+	http2NextProtoTLS = "h2"
+	httpRev14         = "h2-14"
+	http11            = "http/1.1"
+)
+
 // TCPListener is spoon's Listener interface with extra helper methods.
 type TCPListener interface {
 	net.Listener
@@ -158,7 +164,7 @@ func (l *tcpListener) ListenAndServeTLS(addr string, certFile string, keyFile st
 	var err error
 
 	tlsConfig := &tls.Config{
-		NextProtos:   []string{"http/1.1"},
+		NextProtos:   []string{http2NextProtoTLS, httpRev14, http11},
 		Certificates: make([]tls.Certificate, 1),
 	}
 
@@ -183,12 +189,9 @@ func (l *tcpListener) RunServer(server *http.Server) error {
 	var lis net.Listener
 
 	if server.TLSConfig != nil {
-		if server.TLSConfig.NextProtos == nil {
-			server.TLSConfig.NextProtos = make([]string, 0)
-		}
 
-		if len(server.TLSConfig.NextProtos) == 0 || !strSliceContains(server.TLSConfig.NextProtos, "http/1.1") {
-			server.TLSConfig.NextProtos = append(server.TLSConfig.NextProtos, "http/1.1")
+		if len(server.TLSConfig.NextProtos) == 0 {
+			server.TLSConfig.NextProtos = append(server.TLSConfig.NextProtos, http2NextProtoTLS, httpRev14, http11)
 		}
 
 		lis = tls.NewListener(l, server.TLSConfig)
