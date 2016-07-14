@@ -12,7 +12,7 @@ import (
 
 const (
 	http2NextProtoTLS = "h2"
-	httpRev14         = "h2-14"
+	http2Rev14        = "h2-14"
 	http11            = "http/1.1"
 )
 
@@ -164,7 +164,7 @@ func (l *tcpListener) ListenAndServeTLS(addr string, certFile string, keyFile st
 	var err error
 
 	tlsConfig := &tls.Config{
-		NextProtos:   []string{http2NextProtoTLS, httpRev14, http11},
+		NextProtos:   []string{http2NextProtoTLS, http2Rev14, http11},
 		Certificates: make([]tls.Certificate, 1),
 	}
 
@@ -191,7 +191,7 @@ func (l *tcpListener) RunServer(server *http.Server) error {
 	if server.TLSConfig != nil {
 
 		if len(server.TLSConfig.NextProtos) == 0 {
-			server.TLSConfig.NextProtos = append(server.TLSConfig.NextProtos, http2NextProtoTLS, httpRev14, http11)
+			server.TLSConfig.NextProtos = append(server.TLSConfig.NextProtos, http2NextProtoTLS, http2Rev14, http11)
 		}
 
 		lis = tls.NewListener(l, server.TLSConfig)
